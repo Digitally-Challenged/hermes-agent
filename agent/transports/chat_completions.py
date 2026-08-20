@@ -460,12 +460,25 @@ class ChatCompletionsTransport(ProviderTransport):
         is_tokenhub = params.get("is_tokenhub", False)
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
 
+        _resolved_cap = None
+        _use_fn = False
         if ephemeral is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(ephemeral))
+            _resolved_cap, _use_fn = ephemeral, True
         elif max_tokens is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(max_tokens))
+            _resolved_cap, _use_fn = max_tokens, True
         elif anthropic_max_out is not None:
-            api_kwargs["max_tokens"] = anthropic_max_out
+            _resolved_cap = anthropic_max_out
+        # Clamp so input + output fits the context window — strict servers
+        # (vLLM) deterministically 400 otherwise. See
+        # model_metadata.compute_output_token_ceiling.
+        _ceiling = params.get("output_token_ceiling")
+        if _resolved_cap is not None and _ceiling:
+            _resolved_cap = min(_resolved_cap, _ceiling)
+        if _resolved_cap is not None:
+            if _use_fn:
+                api_kwargs.update(max_tokens_fn(_resolved_cap))
+            else:
+                api_kwargs["max_tokens"] = _resolved_cap
 
         # Kimi: top-level reasoning_effort (unless thinking disabled)
         if is_kimi:
@@ -655,14 +668,27 @@ class ChatCompletionsTransport(ProviderTransport):
         # (e.g. opencode-go: mimo-v2.5-pro = 131072).
         profile_max = profile.get_max_tokens(model)
 
+        _resolved_cap = None
+        _use_fn = False
         if ephemeral is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(ephemeral))
+            _resolved_cap, _use_fn = ephemeral, True
         elif user_max is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(user_max))
+            _resolved_cap, _use_fn = user_max, True
         elif profile_max and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(profile_max))
+            _resolved_cap, _use_fn = profile_max, True
         elif anthropic_max is not None:
-            api_kwargs["max_tokens"] = anthropic_max
+            _resolved_cap = anthropic_max
+        # Clamp so input + output fits the context window — strict servers
+        # (vLLM) deterministically 400 otherwise. See
+        # model_metadata.compute_output_token_ceiling.
+        _ceiling = params.get("output_token_ceiling")
+        if _resolved_cap is not None and _ceiling:
+            _resolved_cap = min(_resolved_cap, _ceiling)
+        if _resolved_cap is not None:
+            if _use_fn:
+                api_kwargs.update(max_tokens_fn(_resolved_cap))
+            else:
+                api_kwargs["max_tokens"] = _resolved_cap
 
         # Provider-specific api_kwargs extras (reasoning_effort, metadata, etc.)
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
