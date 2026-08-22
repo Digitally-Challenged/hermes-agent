@@ -479,7 +479,7 @@ class ClientLifecycleMixin:
     def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
         """Native Anthropic client for ``token``/``base_url`` with the provider/model request timeout."""
         from agent.anthropic_adapter import build_anthropic_client
-        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model, base_url=getattr(self, "base_url", None)))
+        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model, base_url=base_url))
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
         """OAuth flag only on native Anthropic; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
