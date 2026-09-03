@@ -381,6 +381,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "imagerouter": {
+        "description": (
+            "ImageRouter image generation across ~140 models. Defaults to an "
+            "unfiltered community SDXL model; any catalog model selectable per call."
+        ),
+        "tools": ["imagerouter_generate", "imagerouter_models"],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     
