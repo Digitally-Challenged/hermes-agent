@@ -287,14 +287,42 @@ class TestBlueBubblesAttachmentDownload:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url registers loopback as the literal 127.0.0.1, never
+    'localhost' -- BlueBubbles resolves localhost to ::1 and this listener is
+    IPv4-only (ECONNREFUSED ::1:8645, 2026-09-03)."""
 
-    def test_default_host(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+    @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::", "::1"])
+    def test_loopback_hosts_register_as_ipv4_literal(self, monkeypatch, host):
+        adapter = _make_adapter(monkeypatch, webhook_host=host)
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
+        assert "localhost" not in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
+
+    def test_register_purges_legacy_localhost_registration(self, monkeypatch):
+        """An old 'localhost' registration for our port/path is ours and gets
+        removed, so BB doesn't keep dispatching to the dead ::1 target."""
+        adapter = _make_adapter(monkeypatch)
+        deleted = []
+
+        async def mock_delete(url, *a, **k):
+            deleted.append(url)
+
+            class R:
+                def raise_for_status(self):
+                    pass
+
+            return R()
+
+        adapter.client = TestBlueBubblesWebhookRegistration._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 14, "url": f"http://localhost:{adapter.webhook_port}{adapter.webhook_path}?token=old"},
+            ]},
+            post_response={"status": 200, "data": {"id": 15}},
+        )
+        adapter.client.delete = mock_delete
+        assert asyncio.get_event_loop().run_until_complete(adapter._register_webhook()) is True
+        assert len(deleted) == 1 and "/webhook/14" in deleted[0]
 
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
