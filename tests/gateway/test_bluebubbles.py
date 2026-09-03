@@ -438,3 +438,314 @@ class TestBlueBubblesWebhookRegistration:
         assert len(deleted_ids) == 2
 
 
+class TestBlueBubblesSelfChatGuard:
+    """Self-chats (Mac and phone share one Apple ID) can't use isFromMe to
+    tell the user's message apart from Hermes's own echoed reply. Listed
+    chats fall through to a persistent sent-guid + content-marker guard
+    instead -- see gateway/platforms/_bluebubbles_self_chat_guard.py.
+    """
+
+    SELF_GUID = "any;-;owner@example.com"
+
+    def _make_self_chat_adapter(self, monkeypatch):
+        return _make_adapter(monkeypatch, self_chat_guids=self.SELF_GUID)
+
+    @pytest.mark.asyncio
+    async def test_unlisted_chat_still_drops_is_from_me(self, monkeypatch):
+        adapter = self._make_self_chat_adapter(monkeypatch)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e))
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-other-chat",
+                "text": "echo from a different chat",
+                "isFromMe": True,
+                "chats": [{"guid": "iMessage;-;someoneelse@example.com"}],
+            },
+        }))
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_self_chat_real_user_message_is_dispatched(self, monkeypatch):
+        adapter = self._make_self_chat_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-from-phone",
+                "text": "what model are you running",
+                "isFromMe": True,
+                "chats": [{"guid": self.SELF_GUID}],
+            },
+        }))
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_self_chat_echo_of_own_sent_guid_is_not_redispatched(self, monkeypatch):
+        from gateway.platforms._bluebubbles_self_chat_guard import record_sent
+
+        adapter = self._make_self_chat_adapter(monkeypatch)
+        record_sent("msg-hermes-sent", self.SELF_GUID)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e))
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-hermes-sent",
+                "text": "here is my reply",
+                "isFromMe": True,
+                "chats": [{"guid": self.SELF_GUID}],
+            },
+        }))
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_self_chat_survives_restart_recorded_guid_still_blocks(self, monkeypatch):
+        """The exact 2026-09-03 bug: a recovery redelivery sent by a PRIOR
+        gateway process must still be recognized by a freshly constructed
+        adapter (new process), since record_sent persists to state.db.
+        """
+        from gateway.platforms._bluebubbles_self_chat_guard import record_sent
+
+        record_sent("msg-recovered-reply", self.SELF_GUID)
+        # Simulate a restart: brand-new adapter instance, no shared memory
+        # with whatever process called record_sent.
+        adapter = self._make_self_chat_adapter(monkeypatch)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e))
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-recovered-reply",
+                "text": "some earlier reply text",
+                "isFromMe": True,
+                "chats": [{"guid": self.SELF_GUID}],
+            },
+        }))
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_self_chat_recovered_marker_text_blocked_even_without_guid_match(
+        self, monkeypatch
+    ):
+        """Covers the race where BlueBubbles' webhook for a just-sent message
+        arrives before send()'s HTTP response (and thus record_sent) lands --
+        content-marker guard is the independent second line of defense.
+        """
+        from gateway.delivery_ledger import RECOVERED_MARKER
+
+        adapter = self._make_self_chat_adapter(monkeypatch)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e))
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-not-yet-recorded",
+                "text": RECOVERED_MARKER + "actual reply content",
+                "isFromMe": True,
+                "chats": [{"guid": self.SELF_GUID}],
+            },
+        }))
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled == []
+
+    @staticmethod
+    def _fake_client(sent_guid="new-sent-guid"):
+        class _FakeClient:
+            async def post(self, url, json=None):
+                class R:
+                    def raise_for_status(self):
+                        pass
+
+                    def json(self):
+                        return {"data": {"guid": sent_guid}}
+
+                return R()
+
+        return _FakeClient()
+
+    @pytest.mark.asyncio
+    async def test_send_records_guid_and_text_for_self_chat_target(self, monkeypatch):
+        from gateway.platforms._bluebubbles_self_chat_guard import (
+            was_sent_by_us,
+            was_text_sent_recently,
+        )
+
+        adapter = self._make_self_chat_adapter(monkeypatch)
+        adapter.client = self._fake_client()
+        await adapter.send(self.SELF_GUID, "hi from hermes")
+        assert was_sent_by_us("new-sent-guid") is True
+        assert was_text_sent_recently(self.SELF_GUID, "hi from hermes") is True
+
+
+class TestBlueBubblesPasswordScrub:
+    """Every request URL carries ``?password=`` and httpx's HTTPStatusError
+    message includes the URL. 34 plaintext copies of the live password were
+    found in gateway.log on 2026-09-03 via SendResult.error -> base logger.
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_failure_error_string_does_not_contain_password(self, monkeypatch):
+        import httpx
+
+        adapter = _make_adapter(monkeypatch, password="s3cr3t-pw")
+        adapter._guid_cache["any;-;+15555550100"] = "any;-;+15555550100"
+
+        class _FailingClient:
+            async def post(self, url, json=None):
+                req = httpx.Request("POST", url)
+                resp = httpx.Response(500, request=req)
+                raise httpx.HTTPStatusError("Server error", request=req, response=resp)
+
+        adapter.client = _FailingClient()
+        result = await adapter.send("any;-;+15555550100", "hello")
+        assert result.success is False
+        assert "s3cr3t-pw" not in result.error
+        assert "password=***" in result.error or "password=" not in result.error
+
+    def test_scrub_handles_raw_and_urlencoded_forms(self, monkeypatch):
+        from urllib.parse import quote
+
+        pw = "p@ss w/ord&x"
+        adapter = _make_adapter(monkeypatch, password=pw)
+        msg = f"boom http://h/api?password={quote(pw, safe='')} and raw {pw}"
+        out = adapter._scrub(RuntimeError(msg))
+        assert pw not in out
+        assert quote(pw, safe="") not in out
+
+
+class TestBlueBubblesTextEchoGuard:
+    """The second 2026-09-03 loop: the Mac's iMessage identity was set to the
+    same phone number the iPhone sends from, so Apple delivered every reply
+    Hermes sent to ``any;-;+1...`` straight back as an INCOMING message from
+    that number -- isFromMe=False, a brand-new guid, in a chat nobody had
+    listed as a self-chat. Neither the isFromMe drop nor the guid guard could
+    see it; Hermes answered itself every ~3s. The text-echo guard is the
+    identity-independent breaker for that.
+    """
+
+    PHONE_GUID = "any;-;+15555550100"
+
+    def _inbound(self, text, guid="msg-incoming-1", chat=None):
+        return _FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": guid,
+                "text": text,
+                "isFromMe": False,
+                "handle": {"address": "+15555550100"},
+                "chats": [{"guid": chat or self.PHONE_GUID}],
+            },
+        })
+
+    @pytest.mark.asyncio
+    async def test_send_records_text_for_unlisted_chat(self, monkeypatch):
+        """Recording must not be gated on self_chat_guids -- the loop chat
+        wasn't listed."""
+        from gateway.platforms._bluebubbles_self_chat_guard import was_text_sent_recently
+
+        adapter = _make_adapter(monkeypatch)  # no self_chat_guids at all
+        adapter.client = TestBlueBubblesSelfChatGuard._fake_client()
+        await adapter.send(self.PHONE_GUID, "Same. Just waiting for your next command.")
+        assert was_text_sent_recently(
+            self.PHONE_GUID, "Same. Just waiting for your next command."
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_echo_of_own_text_with_is_from_me_false_is_dropped(self, monkeypatch):
+        """The exact loop shape: our sent text comes back isFromMe=False with
+        a different guid in an unlisted chat."""
+        from gateway.platforms._bluebubbles_self_chat_guard import record_sent
+
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e))
+        record_sent("guid-we-sent", self.PHONE_GUID, "Nothing on my end. You tell me.")
+
+        response = await adapter._handle_webhook(
+            self._inbound("Nothing on my end. You tell me.", guid="guid-apple-assigned-to-echo")
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_real_user_message_with_different_text_is_dispatched(self, monkeypatch):
+        from gateway.platforms._bluebubbles_self_chat_guard import record_sent
+
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        record_sent("guid-we-sent", self.PHONE_GUID, "Nothing on my end. You tell me.")
+
+        response = await adapter._handle_webhook(self._inbound("what model are you running"))
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_same_text_in_a_different_chat_is_not_suppressed(self, monkeypatch):
+        """Keyed per chat: a reply to one thread must not eat an identical
+        message arriving in another."""
+        from gateway.platforms._bluebubbles_self_chat_guard import record_sent
+
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        record_sent("guid-we-sent", self.PHONE_GUID, "ok")
+
+        response = await adapter._handle_webhook(
+            self._inbound("ok", chat="iMessage;-;someoneelse@example.com")
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert len(handled) == 1
+
+    def test_text_match_expires_after_window(self, monkeypatch):
+        import gateway.platforms._bluebubbles_self_chat_guard as guard
+
+        guard.record_sent("g", self.PHONE_GUID, "stale reply")
+        assert guard.was_text_sent_recently(self.PHONE_GUID, "stale reply") is True
+        real_time = guard.time.time
+        monkeypatch.setattr(
+            guard.time, "time", lambda: real_time() + guard._TEXT_ECHO_WINDOW_SECONDS + 1
+        )
+        assert guard.was_text_sent_recently(self.PHONE_GUID, "stale reply") is False
+
+    def test_record_sent_failure_is_logged_not_silent(self, monkeypatch, caplog):
+        """A swallowed write failure silently reopens the echo window; it
+        must at least leave a trace."""
+        import gateway.platforms._bluebubbles_self_chat_guard as guard
+
+        def boom():
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(guard, "_connect", boom)
+        with caplog.at_level("WARNING"):
+            guard.record_sent("g", self.PHONE_GUID, "text")  # must not raise
+        assert any("echo protection degraded" in r.message for r in caplog.records)
+
+

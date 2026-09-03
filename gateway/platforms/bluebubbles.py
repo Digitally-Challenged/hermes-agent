@@ -114,8 +114,12 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
-# Webhook event types that carry user messages
-_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+# Webhook event types that carry user messages. Deliberately excludes
+# "updated-message" -- BlueBubbles fires it for delivery/read receipts as
+# well as edits and retractions, and this adapter (SUPPORTS_MESSAGE_EDITING
+# = False) can't tell them apart, so a receipt on our own sent reply was
+# being redispatched as a second inbound turn (duplicate replies).
+_MESSAGE_EVENTS = {"new-message", "message"}
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -203,6 +207,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
 
+        # Chats where the account texting Hermes and the account running
+        # Hermes are the same Apple ID (e.g. a self-thread). BlueBubbles
+        # webhooks can't distinguish "Nick's phone sent this" from "the Mac
+        # sent this to itself" in that case, so isFromMe is unreliable there.
+        # Listed chats skip the isFromMe drop; _bluebubbles_self_chat_guard
+        # stops Hermes's own replies in that chat from re-triggering itself.
+        _self_chat_raw = extra.get("self_chat_guids") or os.getenv(
+            "BLUEBUBBLES_SELF_CHAT_GUIDS", ""
+        )
+        if isinstance(_self_chat_raw, str):
+            self._self_chat_guids = {
+                g.strip() for g in _self_chat_raw.split(",") if g.strip()
+            }
+        elif isinstance(_self_chat_raw, (list, tuple, set)):
+            self._self_chat_guids = {str(g).strip() for g in _self_chat_raw if str(g).strip()}
+        else:
+            self._self_chat_guids = set()
+
     # ------------------------------------------------------------------
     # API helpers
     # ------------------------------------------------------------------
@@ -210,6 +232,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _api_url(self, path: str) -> str:
         sep = "&" if "?" in path else "?"
         return f"{self.server_url}{path}{sep}password={quote(self.password, safe='')}"
+
+    def _scrub(self, exc: BaseException) -> str:
+        """Stringify an exception with the API password removed.
+
+        Every request URL carries ``password=`` (BlueBubbles has no header
+        auth), and ``httpx.HTTPStatusError.__str__`` includes the full URL --
+        so a bare ``str(exc)`` in a log line or ``SendResult.error`` leaks the
+        credential. This was observed live (34 plaintext copies in
+        gateway.log on 2026-09-03). Use this at every exception→string site.
+        """
+        text = str(exc)
+        if self.password:
+            for needle in {self.password, quote(self.password, safe="")}:
+                text = text.replace(needle, "***")
+        return re.sub(r"password=[^&\s'\"]+", "password=***", text)
 
     @staticmethod
     def _compile_mention_patterns(raw: Any) -> List[re.Pattern]:
@@ -286,7 +323,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error(
-                "[bluebubbles] cannot reach server at %s: %s", self.server_url, exc
+                "[bluebubbles] cannot reach server at %s: %s", self.server_url, self._scrub(exc)
             )
             if self.client:
                 await self.client.aclose()
@@ -398,7 +435,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            "events": ["new-message"],
         }
 
         try:
@@ -420,7 +457,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning(
                 "[bluebubbles] failed to register webhook with server: %s",
-                exc,
+                self._scrub(exc),
             )
             return False
 
@@ -453,7 +490,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug(
                 "[bluebubbles] failed to unregister webhook (non-critical): %s",
-                exc,
+                self._scrub(exc),
             )
         return removed
 
@@ -518,7 +555,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = data.get("guid") or data.get("messageGuid") or "ok"
             return SendResult(success=True, message_id=str(msg_id), raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=self._scrub(exc))
 
     # ------------------------------------------------------------------
     # Text sending
@@ -580,8 +617,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 last = SendResult(
                     success=True, message_id=str(msg_id), raw_response=res
                 )
+                # Every send, every chat: the text-echo guard must see all of
+                # our outbound to catch an echo Apple labels as incoming
+                # (isFromMe=False) in a chat nobody listed as a self-chat.
+                from gateway.platforms._bluebubbles_self_chat_guard import record_sent
+
+                record_sent(data.get("guid"), guid, chunk)
             except Exception as exc:
-                return SendResult(success=False, error=str(exc))
+                return SendResult(success=False, error=self._scrub(exc))
         return last
 
     # ------------------------------------------------------------------
@@ -640,7 +683,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 error=result.get("message", "Attachment upload failed"),
             )
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=self._scrub(e))
 
     async def send_image(
         self,
@@ -864,7 +907,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.warning(
                 "[bluebubbles] failed to download attachment %s: %s",
                 _redact(att_guid),
-                exc,
+                self._scrub(exc),
             )
             return None
 
@@ -937,7 +980,33 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or record.get("is_from_me")
         )
         if is_from_me:
-            return web.Response(text="ok")
+            # Self-chats (Hermes's Mac and the user share one Apple ID) can't
+            # be told apart from Hermes's own echoed replies via isFromMe
+            # alone, so listed chats fall through to a sent-guid de-dupe
+            # instead of being dropped outright.
+            _early_chat_guid = self._value(
+                record.get("chatGuid"),
+                payload.get("chatGuid"),
+                record.get("chat_guid"),
+                payload.get("chat_guid"),
+            )
+            if not _early_chat_guid:
+                _chats = record.get("chats") or []
+                if _chats and isinstance(_chats[0], dict):
+                    _early_chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+            if _early_chat_guid not in self._self_chat_guids:
+                return web.Response(text="ok")
+            from gateway.platforms._bluebubbles_self_chat_guard import (
+                looks_like_own_marker,
+                was_sent_by_us,
+            )
+
+            _msg_guid = self._value(record.get("guid"), payload.get("guid"))
+            _early_text = self._value(
+                record.get("text"), record.get("message"), record.get("body")
+            )
+            if was_sent_by_us(_msg_guid) or looks_like_own_marker(_early_text):
+                return web.Response(text="ok")
 
         # Skip tapback reactions delivered as messages
         assoc_type = record.get("associatedMessageType")
@@ -1027,6 +1096,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "missing message fields"}, status=400)
 
         session_chat_id = chat_guid or chat_identifier
+
+        # Identity-independent echo breaker (runs for EVERY inbound, listed
+        # self-chat or not, regardless of isFromMe): if this exact text is
+        # something we sent to this chat moments ago, it's our own reply
+        # coming back -- see _bluebubbles_self_chat_guard for the 2026-09-03
+        # loop that motivated it.
+        from gateway.platforms._bluebubbles_self_chat_guard import was_text_sent_recently
+
+        if was_text_sent_recently(session_chat_id, text):
+            logger.info(
+                "[bluebubbles] dropping inbound that matches our own recent send "
+                "(echo) in chat %s",
+                _redact(session_chat_id or ""),
+            )
+            return web.Response(text="ok")
+
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
