@@ -381,6 +381,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "imagerouter": {
+        "description": (
+            "ImageRouter image generation across ~140 models. Defaults to a "
+            "filter-free FLUX fine-tune; any catalog model selectable per call."
+        ),
+        "tools": ["imagerouter_generate", "imagerouter_models"],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     
