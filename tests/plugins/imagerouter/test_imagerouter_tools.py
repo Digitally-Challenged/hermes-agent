@@ -109,6 +109,58 @@ def test_generate_marks_filtered_model_as_not_unfiltered(_image_dir, monkeypatch
     assert out["unfiltered"] is False
 
 
+def test_delivery_emits_media_tag_on_messaging(_image_dir, monkeypatch):
+    monkeypatch.setattr(ir_tools, "_delivers_as_an_attachment", lambda: True)
+    monkeypatch.setattr(ir_tools, "ir_generate",
+                        lambda *a, **k: [{"b64_json": base64.b64encode(PNG_1PX).decode()}])
+    monkeypatch.setattr(ir_tools, "model_price", lambda *a, **k: None)
+    out = json.loads(ir_tools._handle_imagerouter_generate({"prompt": "x"}))
+    assert f"MEDIA:{out['image']}" in out["delivery"]
+    # the tag must be alone on its line for the gateway to parse it
+    tag_line = [ln for ln in out["delivery"].splitlines() if ln.startswith("MEDIA:")]
+    assert tag_line == [f"MEDIA:{out['image']}"]
+
+
+def test_delivery_omits_media_tag_off_messaging(_image_dir, monkeypatch):
+    monkeypatch.setattr(ir_tools, "_delivers_as_an_attachment", lambda: False)
+    monkeypatch.setattr(ir_tools, "ir_generate",
+                        lambda *a, **k: [{"b64_json": base64.b64encode(PNG_1PX).decode()}])
+    monkeypatch.setattr(ir_tools, "model_price", lambda *a, **k: None)
+    out = json.loads(ir_tools._handle_imagerouter_generate({"prompt": "x"}))
+    assert "MEDIA:" not in out["delivery"]
+    assert out["image"] in out["delivery"]
+
+
+def test_delivery_covers_every_image_when_n_gt_1(_image_dir, monkeypatch):
+    monkeypatch.setattr(ir_tools, "_delivers_as_an_attachment", lambda: True)
+    b64 = base64.b64encode(PNG_1PX).decode()
+    monkeypatch.setattr(ir_tools, "ir_generate", lambda *a, **k: [{"b64_json": b64}] * 3)
+    monkeypatch.setattr(ir_tools, "model_price", lambda *a, **k: None)
+    out = json.loads(ir_tools._handle_imagerouter_generate({"prompt": "x", "n": 3}))
+    tags = [ln for ln in out["delivery"].splitlines() if ln.startswith("MEDIA:")]
+    assert len(tags) == 3
+    assert sorted(tags) == sorted(f"MEDIA:{p}" for p in out["images"])
+
+
+def test_attachment_check_is_false_when_classifier_unavailable(monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def no_session_context(name, *a, **k):
+        if name == "gateway.session_context":
+            raise ImportError("not available")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_session_context)
+    assert ir_tools._delivers_as_an_attachment() is False
+
+
+def test_schema_tells_model_to_relay_delivery_verbatim():
+    desc = ir_tools.IMAGEROUTER_GENERATE_SCHEMA["description"]
+    assert "delivery" in desc
+    assert "verbatim" in desc.lower() or "exactly" in desc.lower()
+
+
 def test_generate_requires_prompt():
     assert "error" in json.loads(ir_tools._handle_imagerouter_generate({}))
     assert "error" in json.loads(ir_tools._handle_imagerouter_generate({"prompt": "   "}))

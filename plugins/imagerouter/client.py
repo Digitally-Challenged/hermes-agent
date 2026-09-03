@@ -19,10 +19,17 @@ BASE_URL = "https://api.imagerouter.io/v1"
 MODELS_URL = f"{BASE_URL}/models"
 GENERATE_URL = f"{BASE_URL}/openai/images/generations"
 
-# Community SDXL fine-tunes that ship without a provider-side content filter.
-# Everything else on ImageRouter (FLUX, Seedream, Qwen, HiDream) is filtered
-# upstream, so a permissive prompt fails there no matter what we send.
+# Community fine-tunes that ship without a provider-side content filter, in
+# rough order of general usefulness. The run-diffusion/* entries are FLUX
+# architecture; the rest are SDXL. Verified 2026-09-02 against permissive and
+# political prompts — none refused at the API layer.
 UNFILTERED_MODELS = (
+    # FLUX-architecture (newer, better prompt adherence and anatomy)
+    "run-diffusion/Juggernaut-Pro-Flux",
+    "run-diffusion/Juggernaut-Flux",
+    "run-diffusion/Juggernaut-Lightning-Flux",
+    "run-diffusion/RunDiffusion-Photo-Flux",
+    # SDXL-architecture (huge community prompt corpus; Pony/Illustrious also edit)
     "cyberdelia/CyberRealisticPony",
     "purplesmartai/pony-diffusion-v6-xl",
     "onomaai/illustrious-xl",
@@ -33,7 +40,10 @@ UNFILTERED_MODELS = (
     "run-diffusion/Juggernaut-XL",
 )
 
-DEFAULT_MODEL = "cyberdelia/CyberRealisticPony"
+# FLUX-architecture uncensored fine-tune: fastest of the permissive set
+# (~6-7 s vs ~18 s for the other Juggernaut Flux builds) with FLUX's stronger
+# prompt adherence over SDXL.
+DEFAULT_MODEL = "run-diffusion/Juggernaut-Pro-Flux"
 _MODELS_CACHE_TTL_S = 3600
 
 

@@ -39,6 +39,40 @@ def _check_imagerouter_available() -> bool:
     return has_api_key()
 
 
+def _delivers_as_an_attachment() -> bool:
+    """True on a surface where the image is received rather than opened off disk.
+
+    Deferred to the shared classifier so this tool cannot drift from the rest of
+    the codebase about what counts as a chat channel. The API server and
+    webhooks are deliberately NOT messaging: they carry a platform value but no
+    attachment channel, and neither strips an unfulfilled MEDIA: tag, so
+    treating them as messaging puts the literal tag in front of the caller.
+    """
+    try:
+        from gateway.session_context import session_is_messaging_surface
+
+        return session_is_messaging_surface()
+    except Exception:
+        return False
+
+
+def _delivery_instruction(path: str) -> str:
+    """The finished line the model must relay for the image to actually arrive.
+
+    Only this side knows the path, and the reply is published whether or not
+    the tag named a real file — a wrong path reads to the user as a message
+    that simply forgot the attachment. Handing over the exact line removes the
+    step where that goes wrong.
+    """
+    if not _delivers_as_an_attachment():
+        return f"Saved to {path}."
+    return (
+        f"Saved to {path}. To deliver it, copy the next line into your reply "
+        f"exactly as written, alone on its own line, with nothing added around "
+        f"it — no backticks, no bold, no markdown link:\nMEDIA:{path}"
+    )
+
+
 def _image_dir() -> Path:
     from hermes_constants import get_hermes_home
 
@@ -107,6 +141,7 @@ def _handle_imagerouter_generate(args: Dict[str, Any], **_kw: Any) -> str:
         "image": paths[0],
         "model": model,
         "unfiltered": model in UNFILTERED_MODELS,
+        "delivery": "\n".join(_delivery_instruction(p) for p in paths),
     }
     if len(paths) > 1:
         payload["images"] = paths
@@ -161,7 +196,13 @@ IMAGEROUTER_GENERATE_SCHEMA = {
         "Generate an image via ImageRouter. Defaults to an unfiltered community "
         "SDXL model, so mature or violent creative prompts are not refused by a "
         "provider filter. Pass `model` to pick any other ImageRouter model "
-        "(use imagerouter_models to browse). Returns a local file path."
+        "(use imagerouter_models to browse).\n"
+        "The result's `delivery` field contains the exact line to put in your "
+        "reply so the user actually SEES the image. Copy it verbatim, alone on "
+        "its own line, with nothing wrapped around it — no backticks, no bold, "
+        "no markdown link. Never describe the image instead of delivering it, "
+        "and never paraphrase the path: the reply is published either way, so a "
+        "missing or mangled tag reads as a message that forgot the attachment."
     ),
     "parameters": {
         "type": "object",
@@ -170,11 +211,14 @@ IMAGEROUTER_GENERATE_SCHEMA = {
             "model": {
                 "type": "string",
                 "description": (
-                    f"ImageRouter model id. Default {DEFAULT_MODEL} (unfiltered). "
-                    "Other unfiltered options: "
+                    f"ImageRouter model id. Default {DEFAULT_MODEL} — an unfiltered "
+                    "FLUX fine-tune. Other unfiltered FLUX builds: "
                     + ", ".join(UNFILTERED_MODELS[1:4])
-                    + ". Filtered but higher fidelity: black-forest-labs/FLUX-1.1-pro, "
-                    "qwen/qwen-image-3, bytedance/seedream-4.5."
+                    + ". Unfiltered SDXL (Pony/Illustrious also support edit+mask): "
+                    + ", ".join(UNFILTERED_MODELS[4:7])
+                    + ". Stock/filtered, for maximum fidelity on ordinary subjects: "
+                    "black-forest-labs/FLUX-1.1-pro, qwen/qwen-image-3, "
+                    "bytedance/seedream-4.5."
                 ),
             },
             "size": {"type": "string", "description": "WxH, e.g. 1024x1024 or 832x1216. Default 1024x1024."},
