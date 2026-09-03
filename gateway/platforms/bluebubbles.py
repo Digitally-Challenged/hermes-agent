@@ -374,10 +374,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """Compute the external webhook URL for BlueBubbles registration."""
+        """Compute the external webhook URL for BlueBubbles registration.
+
+        Loopback is registered as the literal ``127.0.0.1``, never
+        ``localhost``: BlueBubbles (Node) resolves ``localhost`` to ``::1``
+        first on macOS, and this listener binds IPv4 only -- every dispatch
+        died with ``ECONNREFUSED ::1:8645`` after a BB restart on 2026-09-03.
+        """
         host = self.webhook_host
-        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::", "::1"}:
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property
@@ -434,15 +440,20 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         or one carrying the raw ``?password=`` from an older adapter. Left in
         place they'd make BB dispatch every event twice (duplicate turns).
         """
-        base = self._webhook_url
         current = self._webhook_register_url
+        # Any loopback spelling of our listener counts as ours -- an older
+        # adapter registered ``localhost``; we now register ``127.0.0.1``.
+        ours = {
+            f"http://{h}:{self.webhook_port}{self.webhook_path}"
+            for h in ("127.0.0.1", "localhost", "[::1]", "0.0.0.0", self.webhook_host)
+        }
         try:
             res = await self._api_get("/api/v1/webhook")
             data = res.get("data")
             if isinstance(data, list):
                 return [
                     wh for wh in data
-                    if str(wh.get("url", "")).split("?", 1)[0] == base
+                    if str(wh.get("url", "")).split("?", 1)[0] in ours
                     and wh.get("url") != current
                 ]
         except Exception:
