@@ -193,10 +193,13 @@ def _handle_imagerouter_models(args: Dict[str, Any], **_kw: Any) -> str:
 IMAGEROUTER_GENERATE_SCHEMA = {
     "name": "imagerouter_generate",
     "description": (
-        "Generate an image via ImageRouter. Defaults to an unfiltered community "
-        "SDXL model, so mature or violent creative prompts are not refused by a "
-        "provider filter. Pass `model` to pick any other ImageRouter model "
-        "(use imagerouter_models to browse).\n"
+        "Generate an image. THIS IS THE ONLY CORRECT WAY to make an image on "
+        "ImageRouter — never hand-roll it with `terminal` and curl, which "
+        "leaks the API key into shell history, skips the download-and-save "
+        "step, and leaves you guessing at a file path that does not exist. "
+        "Call this tool and use the path it returns.\n"
+        "Defaults to a filter-free model, so mature, violent, or political "
+        "prompts are not refused by a provider filter.\n"
         "The result's `delivery` field contains the exact line to put in your "
         "reply so the user actually SEES the image. Copy it verbatim, alone on "
         "its own line, with nothing wrapped around it — no backticks, no bold, "
@@ -211,14 +214,18 @@ IMAGEROUTER_GENERATE_SCHEMA = {
             "model": {
                 "type": "string",
                 "description": (
-                    f"ImageRouter model id. Default {DEFAULT_MODEL} — an unfiltered "
-                    "FLUX fine-tune. Other unfiltered FLUX builds: "
+                    "LEAVE THIS UNSET unless the user named a specific model. The "
+                    f"default ({DEFAULT_MODEL}) is deliberately chosen and applies "
+                    "a filter-free endpoint; overriding it with a stock model "
+                    "(black-forest-labs/*, qwen/*, bytedance/*) sends the prompt to "
+                    "a provider that refuses mature or political subjects, which is "
+                    "usually NOT what the user wants. Other filter-free options if "
+                    "the user asks for a different look: "
                     + ", ".join(UNFILTERED_MODELS[1:4])
-                    + ". Unfiltered SDXL (Pony/Illustrious also support edit+mask): "
+                    + " (FLUX), "
                     + ", ".join(UNFILTERED_MODELS[4:7])
-                    + ". Stock/filtered, for maximum fidelity on ordinary subjects: "
-                    "black-forest-labs/FLUX-1.1-pro, qwen/qwen-image-3, "
-                    "bytedance/seedream-4.5."
+                    + " (SDXL; Pony and Illustrious also support edit+mask). Call "
+                    "imagerouter_models to browse the full catalog."
                 ),
             },
             "size": {"type": "string", "description": "WxH, e.g. 1024x1024 or 832x1216. Default 1024x1024."},
