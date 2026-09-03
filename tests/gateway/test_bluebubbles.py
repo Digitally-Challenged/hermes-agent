@@ -593,6 +593,61 @@ class TestBlueBubblesSelfChatGuard:
         assert was_text_sent_recently(self.SELF_GUID, "hi from hermes") is True
 
 
+class TestBlueBubblesSendBubbles:
+    """One reply = one iMessage bubble. The paragraph splitter turned a
+    single approval prompt into 5 bubbles in one second (2026-09-03 10:55).
+    """
+
+    @staticmethod
+    def _recording_client(posts):
+        class _Client:
+            async def post(self, url, json=None):
+                posts.append(json)
+
+                class R:
+                    def raise_for_status(self):
+                        pass
+
+                    def json(self):
+                        return {"data": {"guid": f"g{len(posts)}"}}
+
+                return R()
+
+        return _Client()
+
+    @pytest.mark.asyncio
+    async def test_multi_paragraph_reply_is_a_single_send(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._guid_cache["any;-;+15555550100"] = "any;-;+15555550100"
+        posts = []
+        adapter.client = self._recording_client(posts)
+        text = (
+            "Dangerous command requires approval:\n\n"
+            "client = make_client()\n\n"
+            "prompt = 'x'\n\n"
+            "Reply /approve to execute."
+        )
+        result = await adapter.send("any;-;+15555550100", text)
+        assert result.success is True
+        assert len(posts) == 1
+        assert posts[0]["message"] == text
+
+    @pytest.mark.asyncio
+    async def test_over_limit_reply_is_chunked_without_pagination_suffix(self, monkeypatch):
+        from gateway.platforms.bluebubbles import MAX_TEXT_LENGTH
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._guid_cache["any;-;+15555550100"] = "any;-;+15555550100"
+        posts = []
+        adapter.client = self._recording_client(posts)
+        text = "word " * (MAX_TEXT_LENGTH // 2)  # ~2.5x the limit
+        result = await adapter.send("any;-;+15555550100", text)
+        assert result.success is True
+        assert len(posts) >= 2
+        assert all(len(p["message"]) <= MAX_TEXT_LENGTH for p in posts)
+        assert not any(p["message"].rstrip().endswith(")") and "/" in p["message"][-8:] for p in posts)
+
+
 class TestBlueBubblesPasswordScrub:
     """Every request URL carries ``?password=`` and httpx's HTTPStatusError
     message includes the URL. 34 plaintext copies of the live password were

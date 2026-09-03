@@ -578,16 +578,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        # Split on paragraph breaks first (double newlines) so each thought
-        # becomes its own iMessage bubble, then truncate any that are still
-        # too long.
-        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
-        chunks: List[str] = []
-        for para in (paragraphs or [text]):
-            if len(para) <= self.MAX_MESSAGE_LENGTH:
-                chunks.append(para)
-            else:
-                chunks.extend(self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH))
+        # One reply = one bubble. An earlier version split on paragraph breaks
+        # so "each thought" got its own bubble; on any structured reply (an
+        # approval prompt, a code block, a list) that sprayed 5+ bubbles in a
+        # second -- each a separate AppleScript send with its own failure
+        # odds and its own phone notification. Chunk only when the text
+        # exceeds iMessage's limit.
+        chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
         last = SendResult(success=True)
         for chunk in chunks:
             guid = await self._resolve_chat_guid(chat_id)
