@@ -9,6 +9,8 @@ downloading from PR #4588 (YuhangLin).
 """
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -379,26 +381,40 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property
-    def _webhook_register_url(self) -> str:
-        """Webhook URL registered with BlueBubbles, including the password as
-        a query param so inbound webhook POSTs carry credentials.
+    def _webhook_token(self) -> str:
+        """Token that authenticates inbound webhook POSTs.
 
         BlueBubbles posts events to the exact URL registered via
-        ``/api/v1/webhook``. Its webhook registration API does not support
-        custom headers, so embedding the password in the URL is the only
-        way to authenticate inbound webhooks without disabling auth.
+        ``/api/v1/webhook`` and its registration API has no custom headers,
+        so the credential has to ride in the URL's query string. It must NOT
+        be the API password: BlueBubbles writes that URL to its own
+        ``main.log`` on every dispatch (no way to turn that off in 1.9.9), so
+        registering ``?password=`` puts the read-everything/send-as-you
+        credential on disk in plaintext, continuously. A token derived from
+        the password is logged instead -- it authorizes only "post a webhook
+        to Hermes on loopback", and can't be reversed into the password.
         """
+        if not self.password:
+            return ""
+        return hashlib.sha256(
+            f"hermes-bluebubbles-webhook:{self.password}".encode("utf-8")
+        ).hexdigest()[:32]
+
+    @property
+    def _webhook_register_url(self) -> str:
+        """Webhook URL registered with BlueBubbles, carrying the derived token."""
         base = self._webhook_url
-        if self.password:
-            return f"{base}?password={quote(self.password, safe='')}"
+        token = self._webhook_token
+        if token:
+            return f"{base}?token={token}"
         return base
 
     @property
     def _webhook_register_url_for_log(self) -> str:
         """Webhook registration URL safe for logs."""
         base = self._webhook_url
-        if self.password:
-            return f"{base}?password=***"
+        if self._webhook_token:
+            return f"{base}?token=***"
         return base
 
     async def _find_registered_webhooks(self, url: str) -> list:
@@ -408,6 +424,27 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             data = res.get("data")
             if isinstance(data, list):
                 return [wh for wh in data if wh.get("url") == url]
+        except Exception:
+            pass
+        return []
+
+    async def _find_stale_webhooks(self) -> list:
+        """BB webhook entries pointing at our listener but with a different
+        query string -- e.g. a registration from before a password rotation,
+        or one carrying the raw ``?password=`` from an older adapter. Left in
+        place they'd make BB dispatch every event twice (duplicate turns).
+        """
+        base = self._webhook_url
+        current = self._webhook_register_url
+        try:
+            res = await self._api_get("/api/v1/webhook")
+            data = res.get("data")
+            if isinstance(data, list):
+                return [
+                    wh for wh in data
+                    if str(wh.get("url", "")).split("?", 1)[0] == base
+                    and wh.get("url") != current
+                ]
         except Exception:
             pass
         return []
@@ -423,6 +460,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
 
         webhook_url = self._webhook_register_url
+
+        # Remove registrations for our listener that carry a different query
+        # (pre-rotation password, legacy ?password= form) -- otherwise BB
+        # dispatches each event to both and every message becomes two turns.
+        for wh in await self._find_stale_webhooks():
+            wh_id = wh.get("id")
+            if not wh_id:
+                continue
+            try:
+                res = await self.client.delete(self._api_url(f"/api/v1/webhook/{wh_id}"))
+                res.raise_for_status()
+                logger.info("[bluebubbles] removed stale webhook registration id=%s", wh_id)
+            except Exception as exc:
+                logger.warning(
+                    "[bluebubbles] failed to remove stale webhook id=%s: %s",
+                    wh_id,
+                    self._scrub(exc),
+                )
 
         # Crash resilience — reuse an existing registration if present
         existing = await self._find_registered_webhooks(webhook_url)
@@ -936,14 +991,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _handle_webhook(self, request):
         from aiohttp import web
 
-        token = (
-            request.query.get("password")
-            or request.query.get("guid")
-            or request.headers.get("x-password")
-            or request.headers.get("x-guid")
-            or request.headers.get("x-bluebubbles-guid")
-        )
-        if token != self.password:
+        # BB posts to the exact URL we registered, so the derived token in the
+        # query string is the only credential that can legitimately arrive.
+        # The raw API password is deliberately NOT accepted here: it must
+        # never be in the registered URL (see _webhook_token).
+        expected = self._webhook_token
+        presented = request.query.get("token") or ""
+        if not expected or not hmac.compare_digest(presented, expected):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             raw = await request.read()

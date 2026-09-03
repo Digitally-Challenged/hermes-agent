@@ -73,9 +73,16 @@ class TestBlueBubblesHelpers:
         assert adapter.server_url == "http://localhost:1234"
 
 
+def _webhook_token_for(password="secret"):
+    import hashlib
+    return hashlib.sha256(f"hermes-bluebubbles-webhook:{password}".encode()).hexdigest()[:32]
+
+
 class _FakeBlueBubblesRequest:
-    def __init__(self, payload, password="secret"):
-        self.query = {"password": password}
+    def __init__(self, payload, password="secret", query=None):
+        # BB posts to the exact URL we registered, which carries the derived
+        # token -- never the raw password.
+        self.query = query if query is not None else {"token": _webhook_token_for(password)}
         self.headers = {}
         self._body = json.dumps(payload).encode("utf-8")
 
@@ -646,6 +653,88 @@ class TestBlueBubblesSendBubbles:
         assert len(posts) >= 2
         assert all(len(p["message"]) <= MAX_TEXT_LENGTH for p in posts)
         assert not any(p["message"].rstrip().endswith(")") and "/" in p["message"][-8:] for p in posts)
+
+
+class TestBlueBubblesWebhookToken:
+    """BlueBubbles logs the registered webhook URL to its own main.log on
+    every dispatch and 1.9.9 has no way to turn that off, so the URL must
+    carry a derived token -- never the API password (which reads and sends
+    all iMessage). 107 plaintext copies of the live password were found in
+    main.log on 2026-09-03 from the old ``?password=`` registration.
+    """
+
+    def test_registered_url_never_contains_the_password(self, monkeypatch):
+        from urllib.parse import quote
+
+        adapter = _make_adapter(monkeypatch, password="super-secret-pw")
+        url = adapter._webhook_register_url
+        assert "super-secret-pw" not in url
+        assert quote("super-secret-pw", safe="") not in url
+        assert "?token=" in url
+        assert adapter._webhook_token in url
+
+    def test_token_is_deterministic_and_not_reversible_by_inspection(self, monkeypatch):
+        a = _make_adapter(monkeypatch, password="pw-one")
+        b = _make_adapter(monkeypatch, password="pw-one")
+        c = _make_adapter(monkeypatch, password="pw-two")
+        assert a._webhook_token == b._webhook_token
+        assert a._webhook_token != c._webhook_token
+        assert "pw-one" not in a._webhook_token
+
+    @pytest.mark.asyncio
+    async def test_raw_password_in_query_is_rejected(self, monkeypatch):
+        """The old registration form must not authenticate any more."""
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e))
+        req = _FakeBlueBubblesRequest(
+            {"type": "new-message", "data": {"guid": "g", "text": "hi",
+             "handle": {"address": "+15555550100"},
+             "chats": [{"guid": "any;-;+15555550100"}]}},
+            query={"password": "secret"},
+        )
+        response = await adapter._handle_webhook(req)
+        assert response.status == 401
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_wrong_token_is_rejected(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        req = _FakeBlueBubblesRequest({"type": "new-message", "data": {}}, query={"token": "nope"})
+        response = await adapter._handle_webhook(req)
+        assert response.status == 401
+
+    def test_register_purges_stale_registrations_for_our_listener(self, monkeypatch):
+        """A pre-rotation / legacy ?password= registration pointing at our
+        listener is deleted before we register, so BB never dispatches each
+        event twice. Registrations for other listeners are left alone."""
+        adapter = _make_adapter(monkeypatch)
+        base = adapter._webhook_url
+        deleted = []
+
+        async def mock_delete(url, *a, **k):
+            deleted.append(url)
+
+            class R:
+                status_code = 200
+
+                def raise_for_status(self):
+                    pass
+
+            return R()
+
+        adapter.client = TestBlueBubblesWebhookRegistration._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 8, "url": f"{base}?password=OLDPASSWORD"},
+                {"id": 9, "url": f"{base}?token=stale-derived-token"},
+                {"id": 3, "url": "http://other:9999/hook?password=x"},
+            ]},
+            post_response={"status": 200, "data": {"id": 14}},
+        )
+        adapter.client.delete = mock_delete
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+        assert ok is True
+        assert sorted(d.split("/webhook/")[1].split("?")[0] for d in deleted) == ["8", "9"]
 
 
 class TestBlueBubblesPasswordScrub:
