@@ -20,7 +20,11 @@ Use `imsg` to read and send iMessage/SMS via macOS Messages.app.
 
 - **macOS** with Messages.app signed in
 - Install: `brew install steipete/tap/imsg`
-- Grant Full Disk Access for terminal (System Settings → Privacy → Full Disk Access)
+- Grant Full Disk Access to the process that runs Hermes (System Settings →
+  Privacy & Security → Full Disk Access). `imsg` reads `chat.db` and inherits
+  its parent's permission: a CLI session inherits your terminal's grant, but
+  the gateway running under launchd does not — add the Python binary the venv
+  resolves to (`readlink -f venv/bin/python`), then restart the gateway.
 - Grant Automation permission for Messages.app when prompted
 
 ## When to Use
@@ -100,3 +104,12 @@ imsg chats --limit 20 --json | jq '.[] | select(.displayName | contains("Mom"))'
 # 3. Send after confirmation
 imsg send --to "+1555123456" --text "I'll be late"
 ```
+
+## Pitfalls
+
+- **`authorization denied` / `unable to open database` on `chat.db` after it
+  used to work.** Full Disk Access is bound to the exact binary path. A
+  Homebrew Python upgrade moves that path, so the gateway's grant silently
+  stops applying and the new binary shows up in the Full Disk Access list
+  toggled off. Toggle it on and restart the gateway. Adding Terminal.app does
+  nothing for a launchd job.
