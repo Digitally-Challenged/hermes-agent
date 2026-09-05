@@ -13,6 +13,7 @@ import binascii
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict
 
@@ -83,7 +84,9 @@ def _image_dir() -> Path:
 
 def _save_bytes(data: bytes, model: str) -> str:
     slug = model.replace("/", "_").replace(":", "-")
-    out = _image_dir() / f"imagerouter_{slug}_{int(time.time() * 1000)}.png"
+    out = _image_dir() / (
+        f"imagerouter_{slug}_{int(time.time() * 1000)}_{uuid.uuid4().hex}.png"
+    )
     out.write_bytes(data)
     return str(out)
 

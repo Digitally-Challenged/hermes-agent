@@ -627,6 +627,76 @@ class TestBlueBubblesSelfChatGuard:
         assert was_sent_by_us("new-sent-guid") is True
         assert was_text_sent_recently(self.SELF_GUID, "hi from hermes") is True
 
+    @pytest.mark.asyncio
+    async def test_send_blocks_webhook_that_arrives_before_send_response(self, monkeypatch):
+        adapter = self._make_self_chat_adapter(monkeypatch)
+        handled = []
+
+        async def handle_message(event):
+            handled.append(event)
+
+        async def send_with_early_webhook(path, payload):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest({
+                "type": "new-message",
+                "data": {
+                    "guid": "outbound-guid",
+                    "text": payload["message"],
+                    "isFromMe": True,
+                    "chats": [{"guid": self.SELF_GUID}],
+                },
+            }))
+            await asyncio.sleep(0)
+            return {"data": {"guid": "outbound-guid"}}
+
+        monkeypatch.setattr(adapter, "handle_message", handle_message)
+        monkeypatch.setattr(adapter, "_api_post", send_with_early_webhook)
+
+        result = await adapter.send(self.SELF_GUID, "ordinary outbound reply")
+
+        assert result.success is True
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_attachment_send_records_guid_for_self_chat_echo(self, tmp_path, monkeypatch):
+        from unittest.mock import AsyncMock
+        from gateway.platforms._bluebubbles_self_chat_guard import was_sent_by_us
+
+        adapter = self._make_self_chat_adapter(monkeypatch)
+        attachment = tmp_path / "image.png"
+        attachment.write_bytes(b"image")
+
+        class Response:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": 200, "data": {"guid": "attachment-guid"}}
+
+        adapter.client = type("Client", (), {})()
+        adapter.client.post = AsyncMock(return_value=Response())
+
+        result = await adapter._send_attachment(self.SELF_GUID, str(attachment))
+
+        assert result.success is True
+        assert was_sent_by_us("attachment-guid") is True
+
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda event: handled.append(event))
+        monkeypatch.setattr(adapter, "_download_attachment", AsyncMock(return_value=str(attachment)))
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "attachment-guid",
+                "isFromMe": True,
+                "chats": [{"guid": self.SELF_GUID}],
+                "attachments": [{"guid": "file-guid", "mimeType": "image/png"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
 
 class TestBlueBubblesSendBubbles:
     """One reply = one iMessage bubble. The paragraph splitter turned a
@@ -681,6 +751,34 @@ class TestBlueBubblesSendBubbles:
         assert len(posts) >= 2
         assert all(len(p["message"]) <= MAX_TEXT_LENGTH for p in posts)
         assert not any(p["message"].rstrip().endswith(")") and "/" in p["message"][-8:] for p in posts)
+
+    @pytest.mark.asyncio
+    async def test_over_limit_reply_to_new_handle_sends_every_chunk(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        resolved_guid = "iMessage;-;new@example.com"
+        resolutions = iter([None, resolved_guid])
+
+        async def resolve(_target):
+            return next(resolutions, resolved_guid)
+
+        posts = []
+
+        async def post(path, payload):
+            posts.append((path, payload))
+            return {"data": {"guid": f"g{len(posts)}"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", resolve)
+        monkeypatch.setattr(adapter, "_api_post", post)
+        text = "word " * 1200
+        expected = adapter.truncate_message(text, adapter.MAX_MESSAGE_LENGTH)
+
+        result = await adapter.send("new@example.com", text)
+
+        assert result.success is True
+        assert [payload["message"] for _, payload in posts] == expected
+        assert posts[0][0] == "/api/v1/chat/new"
+        assert all(path == "/api/v1/message/text" for path, _ in posts[1:])
 
 
 class TestBlueBubblesWebhookToken:
@@ -919,5 +1017,3 @@ class TestBlueBubblesTextEchoGuard:
         with caplog.at_level("WARNING"):
             guard.record_sent("g", self.PHONE_GUID, "text")  # must not raise
         assert any("echo protection degraded" in r.message for r in caplog.records)
-
-

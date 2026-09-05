@@ -62,6 +62,23 @@ def test_get_api_key_prefers_process_env(monkeypatch):
     assert ir_client.get_api_key() == "from-env"
 
 
+def test_get_api_key_honors_profile_scope_over_process_env(monkeypatch):
+    from agent.secret_scope import (
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+
+    monkeypatch.setenv("IMAGEROUTER_API_KEY", "other-profile")
+    set_multiplex_active(True)
+    token = set_secret_scope({"IMAGEROUTER_API_KEY": "active-profile"})
+    try:
+        assert ir_client.get_api_key() == "active-profile"
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(False)
+
+
 def test_get_api_key_falls_back_to_hermes_env(tmp_path, monkeypatch):
     monkeypatch.delenv("IMAGEROUTER_API_KEY", raising=False)
     monkeypatch.delenv("IMAGE_ROUTER_API_KEY", raising=False)
@@ -140,6 +157,27 @@ def test_delivery_covers_every_image_when_n_gt_1(_image_dir, monkeypatch):
     tags = [ln for ln in out["delivery"].splitlines() if ln.startswith("MEDIA:")]
     assert len(tags) == 3
     assert sorted(tags) == sorted(f"MEDIA:{p}" for p in out["images"])
+
+
+def test_generate_uses_unique_paths_for_images_saved_in_same_millisecond(
+    _image_dir, monkeypatch
+):
+    monkeypatch.setattr(ir_tools.time, "time", lambda: 1234.0)
+    entries = [
+        {"b64_json": base64.b64encode(data).decode()}
+        for data in (b"first", b"second", b"third")
+    ]
+    monkeypatch.setattr(ir_tools, "ir_generate", lambda *a, **k: entries)
+    monkeypatch.setattr(ir_tools, "model_price", lambda *a, **k: None)
+
+    out = json.loads(ir_tools._handle_imagerouter_generate({"prompt": "x", "n": 3}))
+
+    assert len(set(out["images"])) == 3
+    assert [open(path, "rb").read() for path in out["images"]] == [
+        b"first",
+        b"second",
+        b"third",
+    ]
 
 
 def test_attachment_check_is_false_when_classifier_unavailable(monkeypatch):

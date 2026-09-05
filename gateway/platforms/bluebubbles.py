@@ -659,7 +659,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if self._private_api_enabled and (
                     "@" in chat_id or re.match(r"^\+\d+", chat_id)
                 ):
-                    return await self._create_chat_for_handle(chat_id, chunk)
+                    created = await self._create_chat_for_handle(chat_id, chunk)
+                    if not created.success:
+                        return created
+                    last = created
+                    from gateway.platforms._bluebubbles_self_chat_guard import record_sent
+
+                    record_sent(created.message_id, chat_id, chunk)
+                    continue
                 return SendResult(
                     success=False,
                     error=f"BlueBubbles chat not found for target: {chat_id}",
@@ -673,6 +680,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 payload["method"] = "private-api"
                 payload["selectedMessageGuid"] = reply_to
                 payload["partIndex"] = 0
+            # Record the text before waiting for BlueBubbles. Its webhook can
+            # arrive before this request returns with the durable message GUID.
+            from gateway.platforms._bluebubbles_self_chat_guard import record_sent
+
+            record_sent(None, guid, chunk)
             try:
                 res = await self._api_post("/api/v1/message/text", payload)
                 data = res.get("data") or {}
@@ -683,8 +695,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 # Every send, every chat: the text-echo guard must see all of
                 # our outbound to catch an echo Apple labels as incoming
                 # (isFromMe=False) in a chat nobody listed as a self-chat.
-                from gateway.platforms._bluebubbles_self_chat_guard import record_sent
-
                 record_sent(data.get("guid"), guid, chunk)
             except Exception as exc:
                 return SendResult(success=False, error=self._scrub(exc))
@@ -738,6 +748,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if result.get("status") == 200:
                 rdata = result.get("data") or {}
                 msg_id = rdata.get("guid") if isinstance(rdata, dict) else None
+                from gateway.platforms._bluebubbles_self_chat_guard import record_sent
+
+                record_sent(msg_id, guid)
                 return SendResult(
                     success=True, message_id=msg_id, raw_response=result
                 )

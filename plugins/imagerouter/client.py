@@ -8,7 +8,6 @@ image generation. Stdlib only — no new dependency for one REST surface.
 from __future__ import annotations
 
 import json
-import os
 import time
 import urllib.error
 import urllib.request
@@ -62,12 +61,14 @@ def _hermes_env_path() -> Path:
 
 
 def get_api_key() -> str:
-    """Resolve the key: process env first, then ~/.hermes/.env.
+    """Resolve the key through the active profile, then ~/.hermes/.env.
 
     Never logged, never returned to the model.
     """
+    from agent.secret_scope import get_secret
+
     for var in ("IMAGEROUTER_API_KEY", "IMAGE_ROUTER_API_KEY"):
-        value = (os.environ.get(var) or "").strip()
+        value = (get_secret(var) or "").strip()
         if value:
             return value
     env_path = _hermes_env_path()
