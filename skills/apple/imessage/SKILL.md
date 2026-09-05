@@ -1,7 +1,7 @@
 ---
 name: imessage
 description: Send and receive iMessages/SMS via the imsg CLI on macOS.
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [macos]
@@ -12,104 +12,138 @@ prerequisites:
   commands: [imsg]
 ---
 
-# iMessage
+# iMessage Skill
 
-Use `imsg` to read and send iMessage/SMS via macOS Messages.app.
-
-## Prerequisites
-
-- **macOS** with Messages.app signed in
-- Install: `brew install steipete/tap/imsg`
-- Grant Full Disk Access to the process that runs Hermes (System Settings →
-  Privacy & Security → Full Disk Access). `imsg` reads `chat.db` and inherits
-  its parent's permission: a CLI session inherits your terminal's grant, but
-  the gateway running under launchd does not — add the Python binary the venv
-  resolves to (`readlink -f venv/bin/python`), then restart the gateway.
-- Grant Automation permission for Messages.app when prompted
+Read and send iMessage/SMS on macOS by driving the `imsg` CLI through the
+`terminal` tool. Covers listing chats, reading history, searching, and
+sending. It does not manage group membership, and it is not the gateway's
+BlueBubbles/Photon iMessage adapter — this skill operates your local
+Messages.app directly.
 
 ## When to Use
 
-- User asks to send an iMessage or text message
-- Reading iMessage conversation history
-- Checking recent Messages.app chats
-- Sending to phone numbers or Apple IDs
+- User asks to send an iMessage or text message.
+- Reading iMessage conversation history or searching past messages.
+- Checking who is reachable on iMessage vs SMS before sending.
+- Finding a chat by contact name or phone number.
 
 ## When NOT to Use
 
-- Telegram/Discord/Slack/WhatsApp messages → use the appropriate gateway channel
-- Group chat management (adding/removing members) → not supported
-- Bulk/mass messaging → always confirm with user first
+- Telegram/Discord/Slack/WhatsApp → use the matching gateway channel.
+- Bulk/mass messaging → confirm with the user first.
+
+## Prerequisites
+
+- macOS with Messages.app signed in.
+- Install: `brew install steipete/tap/imsg`.
+- Full Disk Access for the process that runs Hermes (System Settings →
+  Privacy & Security → Full Disk Access). `imsg` reads `chat.db` and inherits
+  its parent's permission — a CLI session inherits your terminal's grant, but
+  the gateway under launchd does not; add the Python binary the venv resolves
+  to (`readlink -f venv/bin/python`), then restart the gateway.
+- Automation permission for Messages.app when prompted.
+
+## How to Run
+
+Run everything through the `terminal` tool. Use `scripts/find_chat.py` to
+turn a contact name into a chat `id`/`identifier` instead of hand-writing
+`jq` filters (chats output is newline-delimited JSON, not an array).
 
 ## Quick Reference
 
-### List Chats
+| Task | Command |
+|------|---------|
+| List recent chats | `imsg chats --limit 10 --json` |
+| Find a chat by name/number | `scripts/find_chat.py "Mom"` |
+| Read a chat's history | `imsg history --chat-id <id> --limit 20 --json` |
+| History with attachments | `imsg history --chat-id <id> --attachments --json` |
+| Search all history | `imsg search --query "pizza tonight"` |
+| Check iMessage vs SMS reachability | `imsg whois --address +15551234567 --local` |
+| Show the active account | `imsg account` |
+| Show chat identity + participants | `imsg group --chat-id <id> --json` |
+| Send text | `imsg send --to "+14155551212" --text "Hi"` |
+| Send to an existing chat | `imsg send --chat-id <id> --text "Hi"` |
+| Send with attachment | `imsg send --to <handle> --text "..." --file /path/file.jpg` |
+| React to the latest message | `imsg react --chat-id <id> --reaction like` |
+| Full CLI reference | `imsg completions llm` |
+
+### Send flags
+
+- `--to <phone|email>` — recipient handle.
+- `--chat-id <id>` / `--chat-identifier <guid>` / `--chat-guid <guid>` —
+  target an existing chat (prefer `--chat-id` once you know it).
+- `--service imessage|sms|auto` — force the bubble color or let Messages
+  decide (default `auto`).
+- `--no-sms-fallback` — disable automatic iMessage→SMS fallback on auto phone
+  sends (use when the recipient must receive an iMessage).
+- `--file <path>` — attach a file. Verify the path exists first.
+- `--json` — machine-readable result.
+
+### Basic vs advanced features
+
+Run `imsg status` to see what the machine supports. Basic commands
+(`chats`, `group`, `history`, `watch`, `send`, `search`, `account`,
+`whois --local`, `react`) work without System Integrity Protection disabled.
+Advanced features (`typing`, `read`, `send-rich`, and most `chat-*`/`edit`/
+`unsend`/`poll` commands) require the IMCore bridge: SIP disabled, `imsg
+launch` to inject the dylib, and Messages.app running. Do not attempt those
+without checking `imsg status` first; fall back to `send` for outbound text.
+
+## Procedure
+
+### Find a chat
 
 ```bash
-imsg chats --limit 10 --json
+# List recent chats (or search by name/number)
+scripts/find_chat.py "Mom"
+
+# Filter to a handle if the name isn't in Contacts
+scripts/find_chat.py "+14155551212"
 ```
 
-### View History
+Each line gives the rowid (`id=…`), name, service, identifier, participants,
+and last-activity time. Use the `id` with `--chat-id`.
+
+### Read history
 
 ```bash
-# By chat ID
 imsg history --chat-id 1 --limit 20 --json
-
-# With attachments info
-imsg history --chat-id 1 --limit 20 --attachments --json
+# Narrow to a window or a participant
+imsg history --chat-id 1 --start 2026-01-01T00:00:00Z --end 2026-02-01T00:00:00Z --json
+imsg history --chat-id 1 --participants +15551234567 --json
 ```
 
-### Send Messages
+`--convert-attachments` converts CAF voice notes/GIFs to cached files a model
+can ingest.
+
+### Send
 
 ```bash
-# Text only
-imsg send --to "+14155551212" --text "Hello!"
-
-# With attachment
-imsg send --to "+14155551212" --text "Check this out" --file /path/to/image.jpg
-
-# Force iMessage or SMS
-imsg send --to "+14155551212" --text "Hi" --service imessage
-imsg send --to "+14155551212" --text "Hi" --service sms
+imsg send --to "+14155551212" --text "I'll be late" --service imessage
 ```
 
-### Watch for New Messages
-
-```bash
-imsg watch --chat-id 1 --attachments
-```
-
-## Service Options
-
-- `--service imessage` — Force iMessage (requires recipient has iMessage)
-- `--service sms` — Force SMS (green bubble)
-- `--service auto` — Let Messages.app decide (default)
-
-## Rules
-
-1. **Always confirm recipient and message content** before sending
-2. **Never send to unknown numbers** without explicit user approval
-3. **Verify file paths** exist before attaching
-4. **Don't spam** — rate-limit yourself
-
-## Example Workflow
-
-User: "Text mom that I'll be late"
-
-```bash
-# 1. Find mom's chat
-imsg chats --limit 20 --json | jq '.[] | select(.displayName | contains("Mom"))'
-
-# 2. Confirm with user: "Found Mom at +1555123456. Send 'I'll be late' via iMessage?"
-
-# 3. Send after confirmation
-imsg send --to "+1555123456" --text "I'll be late"
-```
+Confirm recipient and content with the user before sending; never send to an
+unknown number without explicit approval.
 
 ## Pitfalls
 
+- **`chats --json` is newline-delimited JSON, not an array.** `jq '.[]'` on
+  it breaks, and the field is `display_name`, not `displayName`. Use
+  `scripts/find_chat.py` rather than hand-rolling `jq`.
 - **`authorization denied` / `unable to open database` on `chat.db` after it
-  used to work.** Full Disk Access is bound to the exact binary path. A
+  used to work.** Full Disk Access is bound to the exact binary path; a
   Homebrew Python upgrade moves that path, so the gateway's grant silently
-  stops applying and the new binary shows up in the Full Disk Access list
-  toggled off. Toggle it on and restart the gateway. Adding Terminal.app does
-  nothing for a launchd job.
+  stops applying. Toggle the new binary on in Full Disk Access and restart
+  the gateway. Adding Terminal.app does nothing for a launchd job.
+- **Advanced commands fail with SIP enabled.** `typing`/`read`/`send-rich`
+  need SIP disabled plus `imsg launch`; confirm with `imsg status` before
+  relying on them.
+- **`react` only targets the most recent incoming message** and needs
+  Messages.app running with accessibility permissions.
+
+## Verification
+
+- `imsg status` shows basic features available and whether advanced features
+  are enabled.
+- `imsg whois --address <handle> --local` confirms reachability before a send.
+- `scripts/find_chat.py "<name>"` returns a chat with the expected `id`.
