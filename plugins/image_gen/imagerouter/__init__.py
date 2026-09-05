@@ -279,7 +279,10 @@ class ImageRouterImageGenProvider(ImageGenProvider):
         finally:
             close = getattr(client, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception as exc:  # noqa: BLE001 - cleanup must never escape
+                    logger.debug("ImageRouter client close failed: %s", _scrub(str(exc), api_key))
 
         data = getattr(response, "data", None) or []
         if not data:

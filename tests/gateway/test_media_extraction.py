@@ -427,3 +427,47 @@ class TestImageGenerateJsonWithMediaText:
         from gateway.run import _collect_history_media_paths
 
         assert "/tmp/gen/poster.png" in _collect_history_media_paths(self._messages())
+
+
+class TestImageGenerateJsonWithoutLocalPath:
+    """When an image_generate JSON payload carries no deliverable local path
+    (``image`` null, or a remote URL), both collectors must fall back to the
+    text scan so an explicit MEDIA: tag elsewhere in the payload is delivered
+    AND recorded for dedup. Losing the history side re-attaches the file after
+    a compression boundary."""
+
+    def _messages(self, image):
+        import json
+
+        payload = {
+            "success": True,
+            "image": image,
+            "delivery": "Saved. MEDIA:/tmp/gen/poster.png",
+            "prompt": "a poster",
+        }
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c", "function": {"name": "image_generate"}}],
+            },
+            {"role": "tool", "tool_call_id": "c", "content": json.dumps(payload)},
+        ]
+
+    def test_auto_append_keeps_the_text_fallback_when_the_json_has_no_local_path(self):
+        """Preserved behaviour, pinned so the two collectors stay symmetric."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        tags, _ = _collect_auto_append_media_tags(self._messages(None), history_offset=0)
+        assert tags == ["MEDIA:/tmp/gen/poster.png"]
+
+    def test_history_dedup_keeps_the_text_fallback_when_the_json_has_no_local_path(self):
+        from gateway.run import _collect_history_media_paths
+
+        assert "/tmp/gen/poster.png" in _collect_history_media_paths(self._messages(None))
+
+    def test_history_dedup_records_both_a_remote_url_and_an_explicit_tag(self):
+        from gateway.run import _collect_history_media_paths
+
+        paths = _collect_history_media_paths(self._messages("https://cdn.example/x.png"))
+        assert "https://cdn.example/x.png" in paths
+        assert "/tmp/gen/poster.png" in paths

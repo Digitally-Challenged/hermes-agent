@@ -1882,6 +1882,14 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         if tool_name_by_call_id.get(cid) == "image_generate":
             # JSON first: the payload echoes the prompt, which may itself
             # contain the text "MEDIA:", so the text scan must not pre-empt it.
+            json_path = _image_generate_json_media_path(content)
+            if json_path:
+                paths.add(json_path)
+                continue
+            # No deliverable local path in the JSON. Keep recording whatever
+            # the payload carried (a remote URL, say), then fall through to
+            # the text scan so an explicit MEDIA: tag in an unusual payload is
+            # still recorded, mirroring the auto-append collector's fallback.
             try:
                 payload = json.loads(content)
             except Exception:
@@ -1892,7 +1900,6 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
                     if isinstance(jp, str) and jp:
                         paths.add(jp)
                         break
-                continue
         if "MEDIA:" in content:
             _add_text_media_paths(content)
     return paths

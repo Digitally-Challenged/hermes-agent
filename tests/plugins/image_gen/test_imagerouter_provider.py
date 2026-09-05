@@ -426,3 +426,20 @@ def test_image_generate_result_reaches_the_gateway_attachment_without_a_media_ta
     ]
     tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
     assert tags == [f"MEDIA:{payload['image']}"]
+
+
+def test_client_cleanup_failure_does_not_escape_or_leak_the_key():
+    """close() runs with the key still in scope; a failure there must not
+    turn a successful generation into an escaped exception the dispatcher
+    would echo."""
+    sdk = _FakeSDK(_b64_response())
+    original_client = sdk.module.OpenAI
+
+    class _LeakyClose(original_client):
+        def close(self):
+            raise RuntimeError("close failed for test-key")
+
+    sdk.module.OpenAI = _LeakyClose
+    result = _generate(sdk, prompt="a cat", aspect_ratio="square")
+    assert result["success"] is True
+    assert Path(result["image"]).is_file()
