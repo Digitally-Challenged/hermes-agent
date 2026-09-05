@@ -1,8 +1,0 @@
-name: imagerouter
-version: 1.0.0
-description: "ImageRouter image generation — 2 tools (generate, models) across ~140 models via api.imagerouter.io. Defaults to an unfiltered FLUX fine-tune (run-diffusion/Juggernaut-Pro-Flux) so mature/violent creative prompts aren't refused by a provider filter; any catalog model selectable per call. Auth: IMAGEROUTER_API_KEY in ~/.hermes/.env."
-author: Nick Coleman
-kind: backend
-provides_tools:
-  - imagerouter_generate
-  - imagerouter_models

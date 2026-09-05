@@ -1,0 +1,7 @@
+name: imagerouter
+version: 1.0.0
+description: "ImageRouter image generation backend — ~140 models via api.imagerouter.io behind one key. Defaults to an unfiltered FLUX fine-tune (run-diffusion/Juggernaut-Pro-Flux) so mature/violent creative prompts aren't refused by a provider filter; pin another with image_gen.imagerouter.model. Text-to-image only."
+author: Nick Coleman
+kind: backend
+requires_env:
+  - IMAGEROUTER_API_KEY
