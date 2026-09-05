@@ -7465,6 +7465,26 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             return False
 
+        # Prevent two profiles from binding the same API server host:port.
+        try:
+            from gateway.status import acquire_scoped_lock
+
+            lock_key = f"{self._host}:{self._port}"
+            acquired, _existing = acquire_scoped_lock("api_server", lock_key)
+            if not acquired:
+                logger.error(
+                    "[%s] %s already in use by another profile", self.name, lock_key
+                )
+                self._set_fatal_error(
+                    "lock_conflict",
+                    "api_server host:port in use by another profile",
+                    retryable=False,
+                )
+                return False
+            self._lock_key = lock_key
+        except ImportError:
+            self._lock_key = None
+
         try:
             mws = [
                 mw
@@ -7605,6 +7625,13 @@ class APIServerAdapter(BasePlatformAdapter):
         (OSError: [Errno 24] Too many open files, #37011).
         """
         self._mark_disconnected()
+        if getattr(self, "_lock_key", None):
+            try:
+                from gateway.status import release_scoped_lock
+
+                release_scoped_lock("api_server", self._lock_key)
+            except Exception:
+                pass
         if self._response_store is not None:
             try:
                 self._response_store.close()

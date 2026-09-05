@@ -320,6 +320,54 @@ def _clear_tool_defs_cache() -> None:
         _tool_defs_cache.clear()
 
 
+def _strip_browser_navigate_cross_references(
+    desc: str, available_tool_names: "set[str]"
+) -> str:
+    """Remove named cross-tool references from the browser_navigate schema
+    description when those tools are not in the agent's toolset.
+
+    The static description prefers web_search / web_extract / terminal; when
+    any of those are missing the model would otherwise hallucinate calls to
+    tools it does not have.
+    """
+    has_web_search = "web_search" in available_tool_names
+    has_web_extract = "web_extract" in available_tool_names
+    has_terminal = "terminal" in available_tool_names
+
+    # Sentence 1: "prefer web_search or web_extract (faster, cheaper)".
+    if has_web_search and has_web_extract:
+        pass
+    elif has_web_search:
+        desc = desc.replace("prefer web_search or web_extract", "prefer web_search")
+    elif has_web_extract:
+        desc = desc.replace("prefer web_search or web_extract", "prefer web_extract")
+    else:
+        desc = desc.replace(
+            " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
+            "",
+        )
+
+    # Sentence 2: "prefer curl via the terminal tool or web_extract".
+    if has_terminal and has_web_extract:
+        pass
+    elif has_terminal:
+        desc = desc.replace(
+            "prefer curl via the terminal tool or web_extract",
+            "prefer curl via the terminal tool",
+        )
+    elif has_web_extract:
+        desc = desc.replace(
+            "prefer curl via the terminal tool or web_extract",
+            "prefer web_extract",
+        )
+    else:
+        desc = desc.replace(
+            " For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these.",
+            "",
+        )
+    return desc
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -557,25 +605,22 @@ def _compute_tool_definitions(
                         filtered_tools[i] = {"type": "function", "function": dynamic}
                         break
 
-    # Strip web tool cross-references from browser_navigate description when
-    # web_search / web_extract are not available.  The static schema says
-    # "prefer web_search or web_extract" which causes the model to hallucinate
-    # those tools when they're missing.
+    # Strip web/terminal tool cross-references from the browser_navigate
+    # description when those tools are not available.  The static schema names
+    # web_search / web_extract / terminal, which causes the model to
+    # hallucinate calls to tools that aren't in its toolset.
     if "browser_navigate" in available_tool_names:
-        web_tools_available = {"web_search", "web_extract"} & available_tool_names
-        if not web_tools_available:
-            for i, td in enumerate(filtered_tools):
-                if td.get("function", {}).get("name") == "browser_navigate":
-                    desc = td["function"].get("description", "")
-                    desc = desc.replace(
-                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
-                        "",
-                    )
-                    filtered_tools[i] = {
-                        "type": "function",
-                        "function": {**td["function"], "description": desc},
-                    }
-                    break
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") != "browser_navigate":
+                continue
+            desc = _strip_browser_navigate_cross_references(
+                td["function"].get("description", ""), available_tool_names
+            )
+            filtered_tools[i] = {
+                "type": "function",
+                "function": {**td["function"], "description": desc},
+            }
+            break
 
     # browser_exec (Browser Use mode) runs arbitrary Python on the host via
     # the browser-use CLI subprocess.  A session whose toolset selection

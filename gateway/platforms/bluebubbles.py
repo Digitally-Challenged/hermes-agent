@@ -306,6 +306,29 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
             )
             return False
+
+        # Prevent two profiles from registering webhooks on the same
+        # BlueBubbles server (and double-responding to the same thread).
+        try:
+            from gateway.status import acquire_scoped_lock
+
+            lock_key = self.server_url
+            acquired, _existing = acquire_scoped_lock("bluebubbles", lock_key)
+            if not acquired:
+                logger.error(
+                    "[bluebubbles] server %s already in use by another profile",
+                    self.server_url,
+                )
+                self._set_fatal_error(
+                    "lock_conflict",
+                    "BlueBubbles server in use by another profile",
+                    retryable=False,
+                )
+                return False
+            self._lock_key = lock_key
+        except ImportError:
+            self._lock_key = None
+
         from aiohttp import web
 
         # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
@@ -363,6 +386,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         # Unregister webhook before cleaning up
         await self._unregister_webhook()
+
+        if getattr(self, "_lock_key", None):
+            try:
+                from gateway.status import release_scoped_lock
+
+                release_scoped_lock("bluebubbles", self._lock_key)
+            except Exception:
+                pass
 
         if self.client:
             await self.client.aclose()

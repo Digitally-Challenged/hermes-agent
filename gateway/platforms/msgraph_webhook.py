@@ -166,6 +166,27 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             )
             return False
 
+        # Prevent two profiles from binding the same webhook host:port.
+        try:
+            from gateway.status import acquire_scoped_lock
+
+            lock_key = f"{self._host or '0.0.0.0'}:{self._port}"
+            acquired, _existing = acquire_scoped_lock("msgraph_webhook", lock_key)
+            if not acquired:
+                logger.error(
+                    "[msgraph_webhook] %s already in use by another profile",
+                    lock_key,
+                )
+                self._set_fatal_error(
+                    "lock_conflict",
+                    "msgraph_webhook host:port in use by another profile",
+                    retryable=False,
+                )
+                return False
+            self._lock_key = lock_key
+        except ImportError:
+            self._lock_key = None
+
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
@@ -185,6 +206,13 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        if getattr(self, "_lock_key", None):
+            try:
+                from gateway.status import release_scoped_lock
+
+                release_scoped_lock("msgraph_webhook", self._lock_key)
+            except Exception:
+                pass
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None

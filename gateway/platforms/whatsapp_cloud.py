@@ -450,6 +450,24 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return False
 
+        # Prevent two profiles from using the same WhatsApp phone number
+        # (and its outbound credential) at once.
+        try:
+            from gateway.status import acquire_scoped_lock
+
+            lock_key = self._phone_number_id
+            acquired, _existing = acquire_scoped_lock("whatsapp_cloud", lock_key)
+            if not acquired:
+                self._set_fatal_error(
+                    "lock_conflict",
+                    "WhatsApp phone number in use by another profile",
+                    retryable=False,
+                )
+                return False
+            self._lock_key = lock_key
+        except ImportError:
+            self._lock_key = None
+
         # Outbound HTTP client. Tighter keepalive matches other platform
         # adapters so idle CLOSE_WAIT drains promptly (#18451).
         from gateway.platforms._http_client_limits import platform_httpx_limits
@@ -495,6 +513,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        if getattr(self, "_lock_key", None):
+            try:
+                from gateway.status import release_scoped_lock
+
+                release_scoped_lock("whatsapp_cloud", self._lock_key)
+            except Exception:
+                pass
         if self._runner is not None:
             try:
                 await self._runner.cleanup()
