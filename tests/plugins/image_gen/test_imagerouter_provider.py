@@ -374,3 +374,55 @@ def test_bundled_manifest_is_an_auto_loading_backend_that_declares_its_key():
     manifest = manifests["image_gen/imagerouter"]
     assert manifest.kind == "backend"
     assert "IMAGEROUTER_API_KEY" in manifest.requires_env
+
+
+def test_client_construction_failure_is_reported_without_leaking_the_key():
+    """The SDK client is built with the key in hand; a failure there must be
+    caught and scrubbed like any other SDK failure, not escape to the tool
+    dispatcher, which echoes exception text to the model."""
+    sdk = _FakeSDK(_b64_response())
+
+    class _Boom:
+        def __init__(self, api_key=None, base_url=None, **_kw):
+            raise RuntimeError(f"client init failed for {api_key}")
+
+    sdk.module.OpenAI = _Boom
+    result = _generate(sdk, prompt="a cat", aspect_ratio="square")
+    assert result["success"] is False
+    assert result["error_type"] == "api_error"
+    assert "test-key" not in result["error"]
+
+
+# ── the whole delivery chain ────────────────────────────────────────────────
+
+
+def test_image_generate_result_reaches_the_gateway_attachment_without_a_media_tag(
+    tmp_path, monkeypatch
+):
+    """config.yaml selects the provider → the built-in image_generate handler
+    discovers the bundled plugin and dispatches through the registry → the
+    gateway extracts the saved path from the JSON result on its own, with no
+    MEDIA: tag from the model, even when the prompt itself contains 'MEDIA:'."""
+    import json
+
+    from gateway.run import _collect_auto_append_media_tags
+    from tools.image_generation_tool import _handle_image_generate
+
+    (tmp_path / "config.yaml").write_text("image_gen:\n  provider: imagerouter\n", encoding="utf-8")
+    sdk = _FakeSDK(_b64_response())
+    with patch.dict("sys.modules", {"openai": sdk.module}):
+        raw = _handle_image_generate(
+            {"prompt": "a poster whose headline reads MEDIA:", "aspect_ratio": "square"}
+        )
+
+    payload = json.loads(raw)
+    assert payload["success"] is True, payload
+    assert payload["provider"] == "imagerouter"
+    assert Path(payload["image"]).parent == tmp_path / "cache" / "images"
+
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "image_generate"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": raw},
+    ]
+    tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
+    assert tags == [f"MEDIA:{payload['image']}"]

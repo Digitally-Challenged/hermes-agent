@@ -1734,6 +1734,26 @@ _TOOL_MEDIA_RE = re.compile(
 )
 
 
+def _image_generate_json_media_path(content: str) -> Optional[str]:
+    """Deliverable file path from a successful image_generate JSON result.
+
+    Checks the known path fields in priority order and returns the first one
+    that is an extension-anchored local path. ``None`` when the content is not
+    a successful JSON object or carries no such field.
+    """
+    try:
+        payload = json.loads(content)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return None
+    for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
+        path = payload.get(field)
+        if isinstance(path, str) and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}"):
+            return path
+    return None
+
+
 def _collect_auto_append_media_tags(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
@@ -1789,20 +1809,17 @@ def _collect_auto_append_media_tags(
         # JSON-payload tools (image_generate) return a local-file path in a
         # known field rather than a MEDIA: tag. Extract it so delivery is
         # deterministic even when the model omits the path from its reply.
-        if tool_name == "image_generate" and "MEDIA:" not in content:
-            try:
-                payload = json.loads(content)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    path = payload.get(field)
-                    if (isinstance(path, str)
-                            and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
-                            and path not in history_media_paths):
-                        media_tags.append(f"MEDIA:{path}")
-                        break
-            continue
+        # The payload echoes the prompt, so the literal text "MEDIA:" can
+        # appear inside it; that must never divert a JSON result to the text
+        # scan below, which would find no deliverable path and drop the file.
+        if tool_name == "image_generate":
+            json_path = _image_generate_json_media_path(content)
+            if json_path:
+                if json_path not in history_media_paths:
+                    media_tags.append(f"MEDIA:{json_path}")
+                continue
+            # No usable path field: fall through to the text scan so an
+            # explicit MEDIA: tag in an unusual payload still delivers.
         if "MEDIA:" not in content:
             continue
         for match in _TOOL_MEDIA_RE.finditer(content):
@@ -1861,11 +1878,10 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         if role not in {"tool", "function"}:
             continue
         content = str(msg.get("content", "") or "")
-        if "MEDIA:" in content:
-            _add_text_media_paths(content)
-            continue
         cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
         if tool_name_by_call_id.get(cid) == "image_generate":
+            # JSON first: the payload echoes the prompt, which may itself
+            # contain the text "MEDIA:", so the text scan must not pre-empt it.
             try:
                 payload = json.loads(content)
             except Exception:
@@ -1876,6 +1892,9 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
                     if isinstance(jp, str) and jp:
                         paths.add(jp)
                         break
+                continue
+        if "MEDIA:" in content:
+            _add_text_media_paths(content)
     return paths
 
 # ---------------------------------------------------------------------------

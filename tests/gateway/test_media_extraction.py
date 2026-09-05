@@ -385,3 +385,45 @@ class TestStaleToolMediaLeak:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestImageGenerateJsonWithMediaText:
+    """image_generate returns a JSON payload that echoes the prompt. The JSON
+    path extraction must not be skipped just because the literal text
+    ``MEDIA:`` appears somewhere in that payload; otherwise a prompt such as
+    "a poster whose headline reads MEDIA:" generates fine and silently
+    delivers nothing (and, on the dedup side, is never recorded)."""
+
+    _RESULT = {
+        "success": True,
+        "image": "/tmp/gen/poster.png",
+        "model": "vendor/model",
+        "prompt": "a poster whose headline reads MEDIA:",
+        "aspect_ratio": "square",
+        "modality": "text",
+        "provider": "imagerouter",
+    }
+
+    def _messages(self):
+        import json
+
+        return [
+            {"role": "user", "content": "make a poster"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c", "function": {"name": "image_generate"}}],
+            },
+            {"role": "tool", "tool_call_id": "c", "content": json.dumps(self._RESULT)},
+        ]
+
+    def test_json_path_is_auto_attached_even_when_the_prompt_says_media(self):
+        from gateway.run import _collect_auto_append_media_tags
+
+        tags, voice = _collect_auto_append_media_tags(self._messages(), history_offset=0)
+        assert tags == ["MEDIA:/tmp/gen/poster.png"]
+        assert voice is False
+
+    def test_history_dedup_records_the_json_path_even_when_the_prompt_says_media(self):
+        from gateway.run import _collect_history_media_paths
+
+        assert "/tmp/gen/poster.png" in _collect_history_media_paths(self._messages())

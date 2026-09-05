@@ -256,8 +256,11 @@ class ImageRouterImageGenProvider(ImageGenProvider):
                 model_id,
             )
 
-        client = openai.OpenAI(api_key=api_key, base_url=OPENAI_BASE_URL, timeout=_REQUEST_TIMEOUT)
+        client = None
         try:
+            client = openai.OpenAI(
+                api_key=api_key, base_url=OPENAI_BASE_URL, timeout=_REQUEST_TIMEOUT
+            )
             response = client.images.generate(
                 model=model_id,
                 prompt=prompt,
@@ -267,7 +270,7 @@ class ImageRouterImageGenProvider(ImageGenProvider):
                 output_format="png",
             )
         except Exception as exc:  # noqa: BLE001 - every SDK failure becomes a tool error
-            logger.debug("ImageRouter image generation failed", exc_info=True)
+            logger.debug("ImageRouter image generation failed: %s", _scrub(str(exc), api_key))
             return fail(
                 f"ImageRouter image generation failed: {_scrub(str(exc), api_key)}",
                 "api_error",
