@@ -94,6 +94,30 @@ class TestAuthzPlatformGateEnv:
         assert _platform_gate_env("GATEWAY_ALLOWED_USERS") == "42"
 
 
+class TestAuthzAuthEnv:
+    def test_scoped_value_wins(self, monkeypatch):
+        from gateway.authz_mixin import _auth_env
+
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "env-allowlist")
+        ss.set_multiplex_active(True)
+        with _Scope({"GATEWAY_ALLOWED_USERS": "42"}):
+            assert _auth_env("GATEWAY_ALLOWED_USERS") == "42"
+
+    def test_scoped_miss_returns_default_not_env(self, monkeypatch):
+        from gateway.authz_mixin import _auth_env
+
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")  # another profile's bridge
+        ss.set_multiplex_active(True)
+        with _Scope({"UNRELATED": "x"}):
+            assert _auth_env("GATEWAY_ALLOWED_USERS") == ""
+
+    def test_single_profile_legacy_env(self, monkeypatch):
+        from gateway.authz_mixin import _auth_env
+
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
+        assert _auth_env("GATEWAY_ALLOWED_USERS") == "42"
+
+
 # ── Cluster B: matrix startup reads (Slack pattern) ────────────────────────
 
 class TestMatrixStartupSecret:

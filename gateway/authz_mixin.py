@@ -29,14 +29,25 @@ from gateway.whatsapp_identity import (
 
 
 def _auth_env(name: str, default: str = "") -> str:
-    """Read allowlist/auth env; prefer profile secret_scope under multiplex."""
+    """Read an allowlist/auth env var with per-profile isolation.
+
+    Fail-closed under multiplex: when a profile secret scope is installed AND
+    multiplexing is active, a key absent from the scope returns ``default``
+    instead of falling through to ``os.environ`` — which may hold another
+    profile's first-writer-bridged value (issue #72348). Single-profile
+    deployments — no scope installed, or multiplex off — behave exactly like
+    the legacy ``os.getenv`` read.
+    """
     if not name:
         return default
     try:
-        from agent.secret_scope import get_secret
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
 
-        val = get_secret(name)
-        if val is not None and str(val).strip():
+        scope = current_secret_scope()
+        if scope is not None and is_multiplex_active():
+            val = scope.get(name)
+            if val is None:
+                return default
             return str(val).strip()
     except Exception:
         pass
