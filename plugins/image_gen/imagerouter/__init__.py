@@ -258,8 +258,14 @@ class ImageRouterImageGenProvider(ImageGenProvider):
 
         client = None
         try:
+            # max_retries=0: the SDK would otherwise retry 5xx/408/429/timeouts
+            # three times, and a generation that timed out but completed
+            # server-side is billed again on every retry.
             client = openai.OpenAI(
-                api_key=api_key, base_url=OPENAI_BASE_URL, timeout=_REQUEST_TIMEOUT
+                api_key=api_key,
+                base_url=OPENAI_BASE_URL,
+                timeout=_REQUEST_TIMEOUT,
+                max_retries=0,
             )
             response = client.images.generate(
                 model=model_id,

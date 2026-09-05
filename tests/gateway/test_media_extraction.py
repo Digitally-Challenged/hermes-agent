@@ -383,10 +383,6 @@ class TestStaleToolMediaLeak:
         )
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
 class TestImageGenerateJsonWithMediaText:
     """image_generate returns a JSON payload that echoes the prompt. The JSON
     path extraction must not be skipped just because the literal text
@@ -471,3 +467,7 @@ class TestImageGenerateJsonWithoutLocalPath:
         paths = _collect_history_media_paths(self._messages("https://cdn.example/x.png"))
         assert "https://cdn.example/x.png" in paths
         assert "/tmp/gen/poster.png" in paths
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

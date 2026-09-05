@@ -85,8 +85,8 @@ class _FakeSDK:
                 return response
 
         class _Client:
-            def __init__(_self, api_key=None, base_url=None, **_kw):
-                sdk.client_kwargs = {"api_key": api_key, "base_url": base_url}
+            def __init__(_self, api_key=None, base_url=None, **kw):
+                sdk.client_kwargs = {"api_key": api_key, "base_url": base_url, **kw}
                 _self.images = _Images()
 
             def close(_self):
@@ -228,16 +228,23 @@ def test_generate_sends_the_request_to_imagerouters_openai_endpoint():
     result = _generate(sdk, prompt="a cat", aspect_ratio="square")
 
     assert result["success"] is True
-    assert sdk.client_kwargs == {
-        "api_key": "test-key",
-        "base_url": "https://api.imagerouter.io/v1/openai",
-    }
+    assert sdk.client_kwargs["api_key"] == "test-key"
+    assert sdk.client_kwargs["base_url"] == "https://api.imagerouter.io/v1/openai"
     (call,) = sdk.calls
     assert call["prompt"] == "a cat"
     assert call["model"] in ir_plugin.UNFILTERED_MODELS
     assert call["size"] == "1024x1024"
     assert call["n"] == 1
     assert call["response_format"] == "b64_json"
+
+
+def test_generate_makes_a_single_attempt_on_the_metered_api():
+    """The openai SDK retries 5xx/408/429/timeouts three times by default. A
+    generation that timed out but completed server-side would then be billed
+    again on every retry, so the client must be built to make one attempt."""
+    sdk = _FakeSDK(_b64_response())
+    _generate(sdk, prompt="a cat", aspect_ratio="square")
+    assert sdk.client_kwargs["max_retries"] == 0
 
 
 @pytest.mark.parametrize(
@@ -428,10 +435,13 @@ def test_image_generate_result_reaches_the_gateway_attachment_without_a_media_ta
     assert tags == [f"MEDIA:{payload['image']}"]
 
 
-def test_client_cleanup_failure_does_not_escape_or_leak_the_key():
+def test_client_cleanup_failure_does_not_escape_or_leak_the_key(caplog):
     """close() runs with the key still in scope; a failure there must not
     turn a successful generation into an escaped exception the dispatcher
-    would echo."""
+    would echo, and whatever gets logged about it must not carry the key."""
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="plugins.image_gen.imagerouter")
     sdk = _FakeSDK(_b64_response())
     original_client = sdk.module.OpenAI
 
@@ -443,3 +453,5 @@ def test_client_cleanup_failure_does_not_escape_or_leak_the_key():
     result = _generate(sdk, prompt="a cat", aspect_ratio="square")
     assert result["success"] is True
     assert Path(result["image"]).is_file()
+    assert "close failed" in caplog.text
+    assert "test-key" not in caplog.text
