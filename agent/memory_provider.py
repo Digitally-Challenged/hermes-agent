@@ -366,6 +366,17 @@ class MemoryProvider(ABC):
           should all have ``env_var`` set and this method stays no-op).
         """
 
+    def read_native_config(self) -> Dict[str, Any]:
+        """Best-effort read of this provider's existing native config.
+
+        Called by the dashboard's legacy config surface to pre-populate a
+        provider's fields from wherever it stores state outside the flat
+        ``$HERMES_HOME/<name>/config.json`` convention (e.g. Holographic's
+        ``plugins.hermes-memory-store`` block in ``config.yaml``). Must be
+        callable without ``initialize()``. Default returns an empty dict.
+        """
+        return {}
+
     def on_memory_write(
         self,
         action: str,

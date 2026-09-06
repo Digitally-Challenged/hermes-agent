@@ -143,6 +143,16 @@ class HolographicMemoryProvider(MemoryProvider):
         except Exception:
             pass
 
+    def read_native_config(self):
+        """Return the existing ``plugins.hermes-memory-store`` config block."""
+        try:
+            from hermes_cli.config import load_config_readonly
+            from hermes_cli.config import cfg_get
+            all_config = load_config_readonly()
+            return cfg_get(all_config, "plugins", "hermes-memory-store", default={}) or {}
+        except Exception:
+            return {}
+
     def get_config_schema(self):
         from hermes_constants import display_hermes_home
         _default_db = f"{display_hermes_home()}/memory_store.db"
