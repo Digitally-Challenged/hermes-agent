@@ -4541,14 +4541,6 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
-    "MATRIX_FREE_RESPONSE_ROOMS": {
-        "description": "Comma-separated Matrix room IDs where bot responds without @mention",
-        "prompt": "Free-response room IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
     "MATRIX_DEVICE_ID": {
         "description": "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
         "prompt": "Matrix device ID (stable across restarts)",
