@@ -542,6 +542,9 @@ DEFAULT_CONFIG = {
         # "chrome"     — explicitly request Chrome
         # Also settable via AGENT_BROWSER_ENGINE env var.
         "engine": "auto",
+        # Firecrawl browser-session TTL in seconds. Also settable via
+        # FIRECRAWL_BROWSER_TTL env var (legacy fallback).
+        "firecrawl_ttl": 300,
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
@@ -2187,6 +2190,7 @@ DEFAULT_CONFIG = {
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
+        "reply_to_mode": "first",      # Reply threading: off | first (default) | all. Also settable via DISCORD_REPLY_TO_MODE env var.
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
@@ -2304,6 +2308,8 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in rooms
         "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
+        "auto_thread": True,           # Auto-create threads for room messages
+        "dm_auto_thread": False,       # Auto-create threads for DM messages
     },
 
     # Approval mode for dangerous commands:
@@ -4184,22 +4190,6 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
-    "FIRECRAWL_BROWSER_TTL": {
-        "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
-        "prompt": "Browser session TTL (seconds)",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "AGENT_BROWSER_ENGINE": {
-        "description": "Browser engine for local mode: auto (default Chrome), lightpanda (faster, no screenshots), chrome",
-        "prompt": "Browser engine (auto/lightpanda/chrome)",
-        "url": "https://github.com/vercel-labs/agent-browser",
-        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
     "CAMOFOX_URL": {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "prompt": "Camofox server URL",
@@ -4460,13 +4450,6 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
-    "DISCORD_REPLY_TO_MODE": {
-        "description": "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first message only, default), 'all' (reply on every chunk)",
-        "prompt": "Discord reply mode (off/first/all)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
     "SLACK_BOT_TOKEN": {
         "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
                        "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
@@ -4558,33 +4541,9 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
-    "MATRIX_REQUIRE_MENTION": {
-        "description": "Require @mention in Matrix rooms (default: true). Set to false to respond to all messages.",
-        "prompt": "Require @mention in rooms (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
     "MATRIX_FREE_RESPONSE_ROOMS": {
         "description": "Comma-separated Matrix room IDs where bot responds without @mention",
         "prompt": "Free-response room IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_AUTO_THREAD": {
-        "description": "Auto-create threads for messages in Matrix rooms (default: true)",
-        "prompt": "Auto-create threads in rooms (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_DM_AUTO_THREAD": {
-        "description": "Auto-create threads for DM messages in Matrix (default: false)",
-        "prompt": "Auto-create threads in DMs (true/false)",
         "url": None,
         "password": False,
         "category": "messaging",
@@ -4816,18 +4775,9 @@ OPTIONAL_ENV_VARS = {
     # checklists) and deprecated knobs shouldn't be offered there. The boolean
     # HERMES_TOOL_PROGRESS is fully unsupported since the v12 config support
     # floor retired its only consumer (the v3→4 migration).
-    "HERMES_PREFILL_MESSAGES_FILE": {
-        "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
-        "prompt": "Prefill messages file path",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
-    "HERMES_EPHEMERAL_SYSTEM_PROMPT": {
-        "description": "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
-        "prompt": "Ephemeral system prompt",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
+    # HERMES_PREFILL_MESSAGES_FILE and HERMES_EPHEMERAL_SYSTEM_PROMPT are
+    # deprecated in favor of the prefill_messages_file config key and the
+    # display.personality / agent.system_prompt resolution; the env vars stay
+    # readable (in _EXTRA_ENV_KEYS) for back-compat but are no longer offered
+    # by the setup wizard.
 }

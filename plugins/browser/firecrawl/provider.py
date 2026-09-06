@@ -59,6 +59,23 @@ class FirecrawlBrowserProvider(BrowserProvider):
     def is_available(self) -> bool:
         return bool(get_secret("FIRECRAWL_API_KEY"))
 
+    @staticmethod
+    def _browser_ttl() -> int:
+        """Resolve the browser-session TTL: config ``browser.firecrawl_ttl``
+        wins; ``FIRECRAWL_BROWSER_TTL`` env is the legacy fallback."""
+        try:
+            from hermes_cli.config import read_raw_config
+
+            val = (read_raw_config().get("browser") or {}).get("firecrawl_ttl")
+            if val not in (None, ""):
+                return int(val)
+        except Exception:
+            pass
+        try:
+            return int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
+        except (ValueError, TypeError):
+            return 300
+
     # ------------------------------------------------------------------
     # Session lifecycle
     # ------------------------------------------------------------------
@@ -79,11 +96,7 @@ class FirecrawlBrowserProvider(BrowserProvider):
         }
 
     def create_session(self, task_id: str) -> Dict[str, object]:
-        try:
-            ttl = int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
-        except (ValueError, TypeError):
-            ttl = 300
-
+        ttl = self._browser_ttl()
         body: Dict[str, object] = {"ttl": ttl}
 
         try:
