@@ -451,7 +451,7 @@ class TestBuzzAdapterLifecycle:
         import gateway.status as gateway_status
 
         monkeypatch.setattr(
-            gateway_status, "acquire_scoped_lock", lambda platform, key: False
+            gateway_status, "acquire_scoped_lock", lambda platform, key: (False, None)
         )
         adapter = _make_adapter()
         adapter.cli_path = "/fake/buzz"
