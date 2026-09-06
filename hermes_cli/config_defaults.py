@@ -2803,9 +2803,6 @@ OPTIONAL_ENV_VARS = {
     "MATRIX_ALLOWED_USERS": _msg(
         "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)",
         "Allowed Matrix user IDs (comma-separated)", None),
-    "MATRIX_FREE_RESPONSE_ROOMS": _msg(
-        "Comma-separated Matrix room IDs where bot responds without @mention",
-        "Free-response room IDs (comma-separated)", None, advanced=True),
     "MATRIX_DEVICE_ID": _msg(
         "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
         "Matrix device ID (stable across restarts)", None, advanced=True),
