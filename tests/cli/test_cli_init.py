@@ -561,6 +561,33 @@ class TestRootLevelProviderOverride:
         assert cfg["terminal"]["vercel_runtime"] == "python3.13"
         assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
 
+    def test_nested_config_deep_merges_sibling_keys(self, tmp_path, monkeypatch):
+        """Overriding one nested leaf must not wipe its sibling defaults."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "auxiliary": {"vision": {"model": "gpt-4o-mini"}},
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        vision = cfg["auxiliary"]["vision"]
+        assert vision["model"] == "gpt-4o-mini"
+        # Siblings preserved by the recursive merge (the old shallow .update()
+        # replaced the whole vision dict, dropping these).
+        assert vision["provider"] == "auto"
+        assert vision["base_url"] == ""
+        assert vision["api_key"] == ""
+        # The untouched web_extract subsection survives intact.
+        assert cfg["auxiliary"]["web_extract"]["provider"] == "auto"
+
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
         from hermes_cli.config import _normalize_root_model_keys

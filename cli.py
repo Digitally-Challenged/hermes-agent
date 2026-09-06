@@ -583,25 +583,20 @@ def load_cli_config() -> Dict[str, Any]:
                     if "model" in file_config["model"] and "default" not in file_config["model"]:
                         defaults["model"]["default"] = file_config["model"]["model"]
 
-            # Deep merge file_config into defaults.
-            # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)
-            for key in defaults:
-                if key == "model":
-                    continue  # Already handled above
-                if key in file_config:
-                    if isinstance(defaults[key], dict) and file_config[key] is None:
-                        continue
-                    if isinstance(defaults[key], dict) and isinstance(file_config[key], dict):
-                        defaults[key].update(file_config[key])
-                    else:
-                        defaults[key] = file_config[key]
-            
-            # Second: carry over keys from file_config that aren't in defaults
-            # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
-            for key in file_config:
-                if key not in defaults and key != "model":
-                    defaults[key] = file_config[key]
-            
+            # Deep-merge file_config into defaults (recursive, preserving
+            # nested defaults) — matching hermes_cli.config._load_config_impl so
+            # the same user config.yaml is treated identically by the CLI and by
+            # load_config()/gateway. The shallow .update() this replaced dropped
+            # sibling keys whenever a user overrode a nested dict leaf (e.g.
+            # auxiliary.vision.model wiping vision.provider/base_url/api_key).
+            # model is merged above (string-vs-dict normalization), so exclude it
+            # here to keep that special-casing authoritative.
+            from hermes_cli.config import _deep_merge
+
+            defaults = _deep_merge(
+                defaults, {k: v for k, v in file_config.items() if k != "model"}
+            )
+
             # Handle legacy root-level max_turns (backwards compat) - copy to
             # agent.max_turns whenever the nested key is missing.
             agent_file_config = file_config.get("agent")
