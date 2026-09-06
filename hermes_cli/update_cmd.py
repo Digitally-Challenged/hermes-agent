@@ -6013,11 +6013,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception:
             pass  # profiles module not available or no profiles
 
-        # Sync Honcho host blocks to all profiles
+        # Sync memory-provider host blocks to all profiles — reached generically
+        # through the provider's sync_profiles hook.
         try:
-            from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
+            from plugins.memory import load_memory_provider
 
-            synced = sync_honcho_profiles_quiet()
+            _provider = load_memory_provider("honcho", register_skills=False)
+            synced = _provider.sync_profiles() if _provider is not None else 0
             if synced:
                 print(f"\n-> Honcho: synced {synced} profile(s)")
         except Exception:

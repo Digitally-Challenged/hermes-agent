@@ -1006,7 +1006,7 @@ def _memory_provider_options() -> List[str]:
 
         options.extend(list_memory_provider_names())
     except Exception:
-        options.extend(["honcho"])
+        pass  # discovery failure degrades to built-in only; no hardcoded fallback
     # Dedupe, preserve order
     return list(dict.fromkeys(options))
 

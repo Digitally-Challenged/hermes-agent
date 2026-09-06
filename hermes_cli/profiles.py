@@ -255,13 +255,27 @@ _RESERVED_NAMES = frozenset({
     "hermes", "default", "test", "tmp", "root", "sudo",
 })
 
-# Hermes subcommands that cannot be used as profile names/aliases
+# Hermes subcommands that cannot be used as profile names/aliases. Memory
+# provider names are a discovered superset (any provider may register a
+# top-level `hermes <provider>` subcommand), appended by _hermes_subcommands().
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
     "mcp", "sessions", "insights", "version", "update", "uninstall",
-    "profile", "plugins", "honcho", "acp",
+    "profile", "plugins", "acp",
 })
+
+
+def _hermes_subcommands() -> frozenset:
+    """Built-in hermes subcommands plus discoverable memory-provider names."""
+    names = set(_HERMES_SUBCOMMANDS)
+    try:
+        from plugins.memory import list_memory_provider_names
+
+        names.update(list_memory_provider_names())
+    except Exception:
+        pass
+    return frozenset(names)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +418,7 @@ def check_alias_collision(name: str) -> Optional[str]:
         return str(exc)
     if canon in _RESERVED_NAMES:
         return f"'{canon}' is a reserved name"
-    if canon in _HERMES_SUBCOMMANDS:
+    if canon in _hermes_subcommands():
         return f"'{canon}' conflicts with a hermes subcommand"
 
     # Check existing commands in PATH
@@ -1666,11 +1680,13 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # /api/profiles/<name> route) the handles live in this process and are
     # closed here; from the CLI this finds nothing and is a no-op.
     try:
-        from plugins.memory.holographic.store import MemoryStore as _MemoryStore
+        from plugins.memory import load_memory_provider
 
-        _released = _MemoryStore.release_all_under(profile_dir)
-        if _released:
-            print(f"✓ Released {_released} memory-store connection(s) held by this process")
+        _holographic = load_memory_provider("holographic", register_skills=False)
+        if _holographic is not None:
+            _released = _holographic.release_profile_resources(str(profile_dir))
+            if _released:
+                print(f"✓ Released {_released} memory-store connection(s) held by this process")
     except Exception:
         pass  # best-effort: never block the delete on the release path
 
@@ -2325,66 +2341,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 # Rename
 # ---------------------------------------------------------------------------
 
-def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
-    """Rename Honcho host blocks for a renamed profile without changing peers."""
-    old_host = f"hermes_{old_name}"
-    legacy_old_host = f"hermes.{old_name}"
-    new_host = f"hermes_{new_name}"
-
-    candidates = [
-        new_dir / "honcho.json",
-        _get_default_hermes_home() / "honcho.json",
-        Path.home() / ".honcho" / "config.json",
-    ]
-
-    seen: set[Path] = set()
-    for path in candidates:
-        try:
-            resolved = path.resolve()
-        except OSError:
-            resolved = path
-        if resolved in seen or not path.is_file():
-            continue
-        seen.add(resolved)
-
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-
-        hosts = raw.get("hosts")
-        if not isinstance(hosts, dict):
-            continue
-        source_host = old_host if old_host in hosts else legacy_old_host
-        if source_host not in hosts:
-            continue
-
-        if new_host in hosts:
-            print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
-            continue
-
-        block = hosts[source_host]
-        if isinstance(block, dict) and "aiPeer" not in block:
-            if source_host.startswith("hermes_"):
-                bare = source_host.split("_", 1)[1]
-            else:
-                bare = source_host.split(".", 1)[1] if "." in source_host else source_host
-            block["aiPeer"] = bare
-        hosts[new_host] = hosts.pop(source_host)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        try:
-            tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            tmp.replace(path)
-        except OSError:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-            continue
-
-        print(f"✓ Honcho host updated: {source_host} → {new_host}")
-
-
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile.
 
@@ -2428,8 +2384,16 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     old_dir.rename(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
-    # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
-    _migrate_honcho_profile_host(old_canon, new_canon, new_dir)
+    # 3. Update profile-scoped memory-provider host blocks (Honcho), preserving
+    # aiPeer identity — reached generically through the provider hook.
+    try:
+        from plugins.memory import load_memory_provider
+
+        _provider = load_memory_provider("honcho", register_skills=False)
+        if _provider is not None:
+            _provider.rename_profile(old_canon, new_canon, str(new_dir))
+    except Exception:
+        pass  # best-effort: provider rename migration must not block the rename
 
     # 4. Update wrapper script
     remove_wrapper_script(old_canon)

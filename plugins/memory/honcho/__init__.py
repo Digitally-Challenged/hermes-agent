@@ -275,6 +275,104 @@ class HonchoMemoryProvider(MemoryProvider):
             pass
         return paths
 
+    # -- Profile / lifecycle hooks -------------------------------------------
+    #
+    # These move the profile- and gateway-specific Honcho plumbing that used to
+    # live in core (hermes_cli/profiles.py, gateway/run.py) into the plugin,
+    # reached generically through the MemoryProvider hooks.
+
+    def clone_for_profile(self, profile_name: str) -> bool:
+        from .cli import clone_honcho_for_profile
+        try:
+            return bool(clone_honcho_for_profile(profile_name))
+        except Exception:
+            return False
+
+    def rename_profile(self, old_name: str, new_name: str, new_dir: str) -> None:
+        from .cli import migrate_honcho_profile_host
+        try:
+            migrate_honcho_profile_host(old_name, new_name, new_dir)
+        except Exception:
+            logger.debug("Honcho profile rename migration failed", exc_info=True)
+
+    def sync_profiles(self) -> int:
+        from .cli import sync_honcho_profiles_quiet
+        try:
+            return int(sync_honcho_profiles_quiet() or 0)
+        except Exception:
+            return 0
+
+    def cache_busting_config(self) -> Dict[str, Any]:
+        from .client import honcho_cache_busting_config
+        try:
+            return dict(honcho_cache_busting_config())
+        except Exception:
+            return {}
+
+    def doctor_check(self) -> Optional[List[Dict[str, Any]]]:
+        from .client import (
+            HonchoClientConfig,
+            get_honcho_client,
+            reset_honcho_client,
+            resolve_config_path,
+        )
+        try:
+            hcfg = HonchoClientConfig.from_global_config()
+            cfg_path = resolve_config_path()
+        except ImportError:
+            return [{
+                "status": "fail",
+                "text": "honcho-ai not installed",
+                "detail": "pip install honcho-ai",
+                "fix": "Honcho is set as memory provider but honcho-ai is not installed",
+            }]
+        except Exception as exc:
+            return [{"status": "warn", "text": "Honcho check failed", "detail": str(exc)}]
+
+        if not cfg_path.exists():
+            # Config file missing — but env var fallback may have resolved it.
+            if hcfg.api_key or hcfg.base_url:
+                return [{
+                    "status": "ok",
+                    "text": "Honcho configured via environment variables",
+                    "detail": f"config file {cfg_path} not found, using HONCHO_API_KEY env var",
+                }]
+            return [{
+                "status": "warn",
+                "text": "Honcho config not found",
+                "detail": "run: hermes memory setup",
+            }]
+
+        if not hcfg.enabled:
+            return [{
+                "status": "info",
+                "text": f"Honcho disabled (set enabled: true in {cfg_path} to activate)",
+            }]
+
+        if not (hcfg.api_key or hcfg.base_url):
+            return [{
+                "status": "fail",
+                "text": "Honcho API key or base URL not set",
+                "detail": "run: hermes memory setup",
+                "fix": "No Honcho API key — run 'hermes memory setup'",
+            }]
+
+        reset_honcho_client()
+        try:
+            get_honcho_client(hcfg)
+            return [{
+                "status": "ok",
+                "text": "Honcho connected",
+                "detail": f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}",
+            }]
+        except Exception as exc:
+            return [{
+                "status": "fail",
+                "text": "Honcho connection failed",
+                "detail": str(exc),
+                "fix": f"Honcho unreachable: {exc}",
+            }]
+
     def __init__(self, query_rewriter: Optional[Callable[[str], str]] = None):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig

@@ -266,6 +266,18 @@ class HolographicMemoryProvider(MemoryProvider):
         self._store = None
         self._retriever = None
 
+    def release_profile_resources(self, directory: str) -> int:
+        """Force-close shared SQLite connections under ``directory``.
+
+        Reached generically by the core profile-delete path (was
+        ``hermes_cli/profiles.py`` importing ``MemoryStore`` directly).
+        """
+        try:
+            from .store import MemoryStore
+            return int(MemoryStore.release_all_under(directory))
+        except Exception:
+            return 0
+
     # -- Tool handlers -------------------------------------------------------
 
     def _handle_fact_store(self, args: dict) -> str:

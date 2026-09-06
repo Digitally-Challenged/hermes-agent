@@ -38,7 +38,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from agent.secret_scope import get_secret
@@ -232,6 +232,31 @@ class Mem0MemoryProvider(MemoryProvider):
         # Platform needs an api_key; self-hosted needs a host (api_key optional
         # when the server runs with AUTH_DISABLED).
         return bool(cfg.get("api_key") or cfg.get("host"))
+
+    def doctor_check(self) -> Optional[List[Dict[str, Any]]]:
+        try:
+            cfg = _load_config()
+        except ImportError:
+            return [{
+                "status": "fail",
+                "text": "Mem0 plugin not loadable",
+                "detail": "pip install mem0ai",
+                "fix": "Mem0 is set as memory provider but mem0ai is not installed",
+            }]
+        except Exception as exc:
+            return [{"status": "warn", "text": "Mem0 check failed", "detail": str(exc)}]
+
+        if cfg.get("api_key"):
+            return [
+                {"status": "ok", "text": "Mem0 API key configured"},
+                {"status": "info", "text": f"user_id={cfg.get('user_id', '?')}  agent_id={cfg.get('agent_id', '?')}"},
+            ]
+        return [{
+            "status": "fail",
+            "text": "Mem0 API key not set",
+            "detail": "(set MEM0_API_KEY in .env or run hermes memory setup)",
+            "fix": "Mem0 is set as memory provider but API key is missing",
+        }]
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""

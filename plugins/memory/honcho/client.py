@@ -1365,3 +1365,47 @@ def reset_honcho_client() -> None:
         _client_slots.clear()
     _honcho_client_slot.reset()
     _honcho_json_timeout_memo.clear()
+
+
+_CACHE_BUSTING_KEYS = (
+    "honcho.peer_name",
+    "honcho.ai_peer",
+    "honcho.pin_peer_name",
+    "honcho.runtime_peer_prefix",
+    "honcho.user_peer_aliases",
+)
+_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
+
+
+def honcho_cache_busting_config() -> dict[str, Any]:
+    """Return Honcho identity keys for the gateway cache-busting signature.
+
+    Moved from ``gateway/run.py`` so the gateway reaches these generically via
+    the provider's ``cache_busting_config`` hook. Memoized by honcho.json mtime
+    because the gateway recomputes the signature frequently.
+    """
+    try:
+        path = resolve_config_path()
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        memo_key = (str(path), mtime_ns)
+        cached = _CACHE_BUSTING_MEMO.get(memo_key)
+        if cached is not None:
+            return dict(cached)
+
+        hcfg = HonchoClientConfig.from_global_config(config_path=path)
+        aliases = hcfg.user_peer_aliases or {}
+        values = {
+            "honcho.peer_name": hcfg.peer_name,
+            "honcho.ai_peer": hcfg.ai_peer,
+            "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
+            "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
+            "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
+        }
+        _CACHE_BUSTING_MEMO.clear()
+        _CACHE_BUSTING_MEMO[memo_key] = values
+        return dict(values)
+    except Exception:
+        return {key: None for key in _CACHE_BUSTING_KEYS}

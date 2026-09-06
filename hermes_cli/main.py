@@ -10172,7 +10172,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         "serve",
         "desktop",
         "gui",
-        "honcho",
         "claw",
         "plugins",
         "security",
@@ -10187,6 +10186,12 @@ def _coalesce_session_name_args(argv: list) -> list:
         "completion",
         "logs",
     }
+    try:
+        from plugins.memory import list_memory_provider_names
+
+        _SUBCOMMANDS.update(list_memory_provider_names())
+    except Exception:
+        pass
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
     result = []
@@ -10360,12 +10365,15 @@ def cmd_profile(args):
                         f"Cloned config, .env, SOUL.md, and skills from {source_label}."
                     )
 
-            # Auto-clone Honcho config for the new profile (only with clone operations)
+            # Auto-clone the memory provider's config for the new profile
+            # (only with clone operations) — reached generically through the
+            # provider's clone_for_profile hook.
             if clone_config or clone_all:
                 try:
-                    from plugins.memory.honcho.cli import clone_honcho_for_profile
+                    from plugins.memory import load_memory_provider
 
-                    if clone_honcho_for_profile(name):
+                    _provider = load_memory_provider("honcho", register_skills=False)
+                    if _provider is not None and _provider.clone_for_profile(name):
                         print(f"Honcho config cloned (peer: {name})")
                 except Exception:
                     pass  # Honcho plugin not installed or not configured

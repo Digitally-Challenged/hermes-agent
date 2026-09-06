@@ -202,7 +202,6 @@ class TestDoctorToolAvailabilityOverrides:
 
 
     def test_marks_kanban_available_only_when_missing_worker_env_gate(self, monkeypatch):
-        monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: False)
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
         available, unavailable = doctor._apply_doctor_tool_availability_overrides(
@@ -224,26 +223,6 @@ class TestDoctorToolAvailabilityOverrides:
 
         assert available == []
         assert unavailable == [kanban_entry]
-
-
-
-
-class TestHonchoDoctorConfigDetection:
-    def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
-        fake_config = SimpleNamespace(enabled=True, api_key="***")
-
-        monkeypatch.setattr(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-            lambda: fake_config,
-        )
-
-        assert doctor._honcho_is_configured_for_doctor()
-
-
-
-
-
-
 
 
 def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):

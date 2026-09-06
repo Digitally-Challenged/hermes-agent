@@ -233,6 +233,77 @@ def sync_honcho_profiles_quiet() -> int:
     return created
 
 
+def migrate_honcho_profile_host(old_name: str, new_name: str, new_dir) -> None:
+    """Rename Honcho host blocks for a renamed profile without changing peers.
+
+    Moved from ``hermes_cli/profiles.py:_migrate_honcho_profile_host`` so the
+    core profile-rename path reaches it generically via the provider's
+    ``rename_profile`` hook instead of importing honcho internals.
+    """
+    old_host = f"hermes_{old_name}"
+    legacy_old_host = f"hermes.{old_name}"
+    new_host = f"hermes_{new_name}"
+
+    try:
+        from hermes_cli.profiles import _get_default_hermes_home
+        default_home = _get_default_hermes_home()
+    except Exception:
+        default_home = get_hermes_home()
+
+    candidates = [
+        Path(new_dir) / "honcho.json",
+        default_home / "honcho.json",
+        Path.home() / ".honcho" / "config.json",
+    ]
+
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        hosts = raw.get("hosts")
+        if not isinstance(hosts, dict):
+            continue
+        source_host = old_host if old_host in hosts else legacy_old_host
+        if source_host not in hosts:
+            continue
+
+        if new_host in hosts:
+            print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
+            continue
+
+        block = hosts[source_host]
+        if isinstance(block, dict) and "aiPeer" not in block:
+            if source_host.startswith("hermes_"):
+                bare = source_host.split("_", 1)[1]
+            else:
+                bare = source_host.split(".", 1)[1] if "." in source_host else source_host
+            block["aiPeer"] = bare
+        hosts[new_host] = hosts.pop(source_host)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        try:
+            tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            tmp.replace(path)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+
+        print(f"✓ Honcho host updated: {source_host} → {new_host}")
+
+
 _profile_override: str | None = None
 
 

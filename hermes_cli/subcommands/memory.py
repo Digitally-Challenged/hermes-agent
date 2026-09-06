@@ -9,15 +9,30 @@ from __future__ import annotations
 from typing import Callable
 
 
+def _discovered_providers() -> list[str]:
+    """Discoverable memory-provider names (single source, via plugins.memory)."""
+    try:
+        from plugins.memory import list_memory_provider_names
+
+        return list_memory_provider_names()
+    except Exception:
+        return []
+
+
 def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     """Attach the ``memory`` subcommand to ``subparsers``."""
+    _provider_list = _discovered_providers()
+    _providers_line = (
+        f"Available providers: {', '.join(_provider_list)}."
+        if _provider_list
+        else "Available providers: (none discovered — install a memory provider plugin)."
+    )
     memory_parser = subparsers.add_parser(
         "memory",
         help="Configure external memory provider",
         description=(
             "Set up and manage external memory provider plugins.\n\n"
-            "Available providers: honcho, openviking, mem0, hindsight,\n"
-            "holographic, retaindb, byterover.\n\n"
+            f"{_providers_line}\n\n"
             "Only one external provider can be active at a time.\n"
             "Built-in memory (MEMORY.md/USER.md) is always active."
         ),

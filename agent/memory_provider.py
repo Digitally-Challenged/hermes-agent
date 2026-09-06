@@ -402,3 +402,91 @@ class MemoryProvider(ABC):
         from config/env only. Default returns an empty list (nothing external).
         """
         return []
+
+    # -- Profile / lifecycle hooks (override to opt in) ----------------------
+    #
+    # These are the extension points the core invokes for profile-scoped and
+    # operational concerns (profile create/rename/delete, `hermes update`,
+    # gateway cache-busting, `hermes doctor`). They are default no-ops so a
+    # provider that has no profile-scoped state or diagnostics pays nothing.
+
+    def clone_for_profile(self, profile_name: str) -> bool:
+        """Clone this provider's configuration for a newly created profile.
+
+        Called during ``hermes profile create`` clone operations so a provider
+        that keys its config by profile (e.g. Honcho host blocks) can seed the
+        new profile's identity from the default/active profile. Must be
+        callable without ``initialize()`` and must not require a live backend.
+
+        Return ``True`` if configuration was created, ``False`` if this
+        provider is not configured or has nothing profile-scoped to clone.
+
+        Default returns ``False``.
+        """
+        return False
+
+    def rename_profile(self, old_name: str, new_name: str, new_dir: str) -> None:
+        """Migrate this provider's config when a profile is renamed.
+
+        Called by ``hermes profile rename`` after the profile directory has
+        already been moved. Providers that store profile-scoped identity
+        blocks (e.g. Honcho host blocks keyed ``hermes_<profile>``) must update
+        those references here without disturbing unrelated peers.
+        ``new_dir`` is the (already-renamed) profile directory path.
+
+        Default is a no-op.
+        """
+
+    def sync_profiles(self) -> int:
+        """Create missing per-profile config for all profiles; return the count created.
+
+        Called by ``hermes update`` to backfill this provider's config for
+        profiles created before the provider was configured. Providers that key
+        config by profile should override; everyone else returns ``0``.
+
+        Default returns ``0``.
+        """
+        return 0
+
+    def release_profile_resources(self, directory: str) -> int:
+        """Force-release this process's resources rooted under ``directory``.
+
+        Called immediately before a profile directory is deleted so open
+        handles this process still holds (e.g. shared SQLite connections) do
+        not make the ``rmtree`` fail on Windows. Return how many resources were
+        released. In a process holding none this is a harmless no-op returning
+        ``0``.
+
+        Default returns ``0`` (nothing to release).
+        """
+        return 0
+
+    def cache_busting_config(self) -> Dict[str, Any]:
+        """Return extra flat keys (``"section.key"`` → value) that must bust the
+        gateway's cached agent when they change.
+
+        Providers whose identity/config lives outside ``config.yaml`` (e.g.
+        Honcho's ``honcho.json`` peer mapping) surface those values here so a
+        change rebuilds the cached ``AIAgent``. Keys and values are folded into
+        the cache-busting signature. Must be callable without ``initialize()``.
+
+        Default returns an empty dict.
+        """
+        return {}
+
+    def doctor_check(self) -> Optional[List[Dict[str, Any]]]:
+        """Return structured ``hermes doctor`` rows, or ``None`` for the generic check.
+
+        ``hermes doctor`` renders this provider's readiness. Return ``None``
+        (the default) to fall back to the generic ``is_available()`` check.
+        Otherwise return a list of result dicts, each with:
+
+          - ``status``: ``"ok"``, ``"warn"``, ``"info"``, or ``"fail"``
+          - ``text``: short label (required)
+          - ``detail``: optional longer explanation
+          - ``fix``: optional one-line remediation (for ``"fail"`` — appended
+            to the doctor's fix list)
+
+        Must be callable without ``initialize()``. The default returns ``None``.
+        """
+        return None
