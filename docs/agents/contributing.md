@@ -270,4 +270,3 @@ reinforced after the Mini Shai-Hulud worm campaign (May 2026).
 Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
 
 ---
-

@@ -249,4 +249,3 @@ tool_prefix: "▏"
 Activate with `/skin cyberpunk` or `display.skin: cyberpunk` in config.yaml.
 
 ---
-

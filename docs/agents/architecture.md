@@ -320,4 +320,3 @@ in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 - `off` — no watcher messages at all
 
 ---
-

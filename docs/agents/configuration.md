@@ -146,4 +146,3 @@ automatically scope to the active profile.
      when touching any of them, make sure the fail-closed semantics are present;
      do not reintroduce the `except _UnscopedSecretError: val = os.getenv(...)`
      fallback-after-miss shape.
-
