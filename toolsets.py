@@ -392,6 +392,28 @@ TOOLSETS = {
         "includes": ["web", "vision", "image_gen"]
     },
 
+    # Explicit session presets for models that benefit from fewer tool choices.
+    # Keep these out of automatic platform-toolset recovery. Select at session
+    # creation; never replace schemas in an active conversation.
+    "focused-coding": {
+        "description": "Compact coding session: files, shell, web docs, skills and memory",
+        "tools": [],
+        "includes": ["file", "terminal", "web", "skills", "memory", "session_search", "todo", "clarify"],
+        "posture": True,
+    },
+    "focused-research": {
+        "description": "Compact research session: web, files, skills and memory",
+        "tools": [],
+        "includes": ["web", "file", "skills", "memory", "session_search", "clarify"],
+        "posture": True,
+    },
+    "focused-media": {
+        "description": "Compact media session: image generation, vision, files and memory",
+        "tools": [],
+        "includes": ["image_gen", "vision", "file", "memory", "clarify"],
+        "posture": True,
+    },
+
     # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
     # code workspace; see agent/coding_context.py. Keeps everything you reach
     # for while pairing on code and drops the rest (messaging, tts, image_gen,

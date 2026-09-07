@@ -59,6 +59,21 @@ class TestGetToolset:
 
 
 class TestResolveToolset:
+    def test_focused_presets_preserve_task_capabilities_without_unrelated_tools(self):
+        coding = set(resolve_toolset("focused-coding"))
+        research = set(resolve_toolset("focused-research"))
+        media = set(resolve_toolset("focused-media"))
+        assert {"terminal", "read_file", "write_file", "patch", "web_search"} <= coding
+        assert {"web_search", "web_extract", "read_file", "write_file"} <= research
+        assert {"image_generate", "vision_analyze", "read_file"} <= media
+        assert {"memory", "clarify"} <= coding & research & media
+        assert not {"image_generate", "browser_navigate", "delegate_task"} & coding
+        assert not {"terminal", "process", "image_generate"} & research
+        assert not {"terminal", "process", "web_search"} & media
+        for name in ("focused-coding", "focused-research", "focused-media"):
+            assert TOOLSETS[name]["posture"] is True
+            assert set(resolve_toolset(name)) < set(resolve_toolset("hermes-cli"))
+
     def test_leaf_toolset(self):
         tools = resolve_toolset("web")
         assert set(tools) == {"web_search", "web_extract"}
@@ -355,4 +370,3 @@ class TestResolveToolsetMemo:
         second = resolve_toolset("hermes-cli", include_registry=False)
         assert first == second
         assert first  # non-empty sanity
-
