@@ -32,4 +32,3 @@ def test_unapproved_command_never_runs_and_retains_outcome(tmp_path, outcome):
     assert result["user_consent"] is False
     assert "not run" in result["execution_note"].lower()
     assert result["output"] == ""
-
