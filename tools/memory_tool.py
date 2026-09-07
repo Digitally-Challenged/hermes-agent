@@ -156,8 +156,8 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    # After this many failed consolidation attempts (overflow / zero-match) in
-    # ONE turn, stop instructing the model to "retry in this turn" and return a
+    # After this many failed edit attempts (zero-match / invalid batch) in
+    # ONE turn, stop instructing the model to retry and return a
     # terminal "save skipped" result so a fragile replace/add can't loop the
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
@@ -169,7 +169,7 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
-        # Per-turn counter of failed at-capacity consolidation attempts; reset
+        # Per-turn counter of failed edit attempts; reset
         # at each turn boundary by reset_consolidation_failures() (#42405).
         self._consolidation_failures = 0
 
@@ -178,7 +178,7 @@ class MemoryStore:
         self._consolidation_failures = 0
 
     def _consolidation_failure(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        """Count an at-capacity consolidation failure and degrade gracefully.
+        """Count a failed edit and degrade gracefully (capacity stops immediately).
 
         Under the per-turn cap, return ``response`` unchanged (it already tells
         the model how to self-correct + retry in this turn). Once the cap is
@@ -198,6 +198,20 @@ class MemoryStore:
                 "now and continue with your reply to the user. The fact can be saved "
                 "in a later turn."
             ),
+        }
+
+    def _capacity_failure(self, target: str) -> Dict[str, Any]:
+        """Leave a full store intact without turning a save into another task."""
+        return {
+            "success": False,
+            "done": True,
+            "reason": "capacity",
+            "error": (
+                "Memory save skipped: content would exceed the limit. "
+                "Leave existing memory unchanged and continue with the user's task. "
+                "Memory cleanup can be done separately when requested."
+            ),
+            "usage": f"{self._char_count(target):,}/{self._char_limit(target):,}",
         }
 
     def load_from_disk(self):
@@ -426,19 +440,7 @@ class MemoryStore:
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
             if new_total > limit:
-                current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Consolidate now: use 'replace' to merge overlapping entries into "
-                        f"shorter ones or 'remove' stale or less important entries (see "
-                        f"current_entries below), then retry this add — all in this turn."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                })
+                return self._capacity_failure(target)
 
             entries.append(content)
             self._set_entries(target, entries)
@@ -498,18 +500,7 @@ class MemoryStore:
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
-                current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content, or 'remove' other stale or less important "
-                        f"entries to make room (see current_entries below), then retry — all "
-                        f"in this turn."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                })
+                return self._capacity_failure(target)
 
             entries[idx] = new_content
             self._set_entries(target, entries)
@@ -650,17 +641,7 @@ class MemoryStore:
             # Budget check against the FINAL state only.
             new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
             if new_total > limit:
-                current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
-                        f"After applying all {len(operations)} operations, memory would be at "
-                        f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                        f"entries in the same batch (see current_entries below), then retry."
-                    ),
-                    "current_entries": self._entries_for(target),
-                    "usage": f"{current:,}/{limit:,}",
-                })
+                return self._capacity_failure(target)
 
             # Commit.
             self._set_entries(target, working)
@@ -1054,11 +1035,11 @@ def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> s
 
 
 def memory_tool(
-    action: str = None,
-    target: str = "memory",
-    content: str = None,
-    old_text: str = None,
-    new_text: str = None,
+    action: Optional[str] = None,
+    target: Optional[str] = "memory",
+    content: Optional[str] = None,
+    old_text: Optional[str] = None,
+    new_text: Optional[str] = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
@@ -1286,7 +1267,5 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
 
 

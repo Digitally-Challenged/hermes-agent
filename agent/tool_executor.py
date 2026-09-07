@@ -45,6 +45,7 @@ from tools.terminal_tool import (
     get_active_env,
 )
 from tools.thread_context import propagate_context_to_thread
+from agent.tool_result_classification import tool_nonexecution
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
@@ -408,6 +409,52 @@ class _ManagedToolResult:
     middleware_trace: list[dict[str, Any]]
     blocked: bool
     dispatched: bool
+
+
+def _record_tool_observation(agent, name, args, result, failed, tool_call_id, *, blocked=False):
+    """Record execution evidence identically for both scheduling paths.
+
+    Dispatch into a tool does not mean its command ran: terminal approvals
+    happen inside dispatch. Refusals remain visible results but never become
+    execution observations or file-mutation evidence.
+    """
+    if blocked or tool_nonexecution(name, result):
+        return result
+    result = agent._append_guardrail_observation(
+        name, args, result, failed=failed, tool_call_id=tool_call_id,
+    )
+    try:
+        agent._record_file_mutation_result(name, args, result, failed)
+    except Exception as exc:
+        logger.debug("file-mutation verifier record failed: %s", exc)
+    return result
+
+
+def _notify_tool_completion(
+    agent, name, args, result, tool_call_id, duration, failed, *,
+    blocked=False, progress_name=None,
+):
+    """Project the persisted result to UI callbacks using the same payload.
+
+    Policy blocks before dispatch already have their own lifecycle event.
+    In-tool refusals must complete their started UI row, with the refusal intact.
+    """
+    if blocked:
+        return
+    if agent.tool_progress_callback:
+        try:
+            agent.tool_progress_callback(
+                "tool.completed", progress_name or name, None, None,
+                duration=duration, is_error=failed, result=result,
+            )
+        except Exception as exc:
+            logger.debug("Tool progress callback error: %s", exc)
+    if agent.tool_complete_callback:
+        try:
+            display_args = _redact_tool_args_for_display(name, args) or args
+            agent.tool_complete_callback(tool_call_id, name, display_args, result)
+        except Exception as exc:
+            logger.debug("Tool complete callback error: %s", exc)
 
 
 class _ToolTimeoutResult(str):
@@ -1743,33 +1790,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     error_message="Tool arguments must be a valid JSON object",
                     middleware_trace=list(middleware_trace),
                 )
-            if blocked:
+            if blocked or tool_nonexecution(function_name, function_result):
                 effect_disposition = "none"
 
-            if not blocked:
-                function_result = agent._append_guardrail_observation(
-                    function_name,
-                    function_args,
-                    function_result,
-                    failed=is_error,
-                    tool_call_id=getattr(tc, "id", "") or "",
-                )
+            function_result = _record_tool_observation(
+                agent, function_name, function_args, function_result, is_error,
+                getattr(tc, "id", "") or "", blocked=blocked,
+            )
 
             if is_error:
                 _err_text = _multimodal_text_summary(function_result)
                 result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
-
-            # Track file-mutation outcome for the turn-end verifier.
-            # `blocked` calls never actually ran — don't let a guardrail
-            # block count as either a failure or a success.
-            if not blocked:
-                try:
-                    agent._record_file_mutation_result(
-                        function_name, function_args, function_result, is_error,
-                    )
-                except Exception as _ver_err:
-                    logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
             if agent.verbose_logging:
                 logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
@@ -1825,15 +1857,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # Every completion surface is downstream of the canonical append. If
         # the UI bridge or process dies while projecting one of these events,
         # resume can reconstruct the tool result that was already visible.
-        if not blocked and agent.tool_progress_callback:
-            try:
-                agent.tool_progress_callback(
-                    "tool.completed", progress_function_name, None, None,
-                    duration=tool_duration, is_error=is_error,
-                    result=display_function_result,
-                )
-            except Exception as cb_err:
-                logging.debug("Tool progress callback error: %s", cb_err)
+        _notify_tool_completion(
+            agent, name, args, display_function_result, tc.id, tool_duration,
+            is_error, blocked=blocked, progress_name=progress_function_name,
+        )
 
         # Print cute message per tool
         if agent._should_emit_quiet_tool_messages():
@@ -1849,15 +1876,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             else:
                 response_preview = _preview_str[:agent.log_prefix_chars] + "..." if len(_preview_str) > agent.log_prefix_chars else _preview_str
                 print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
-
-        if not blocked and agent.tool_complete_callback:
-            try:
-                display_args = _redact_tool_args_for_display(name, args) or args
-                agent.tool_complete_callback(
-                    tc.id, name, display_args, display_function_result,
-                )
-            except Exception as cb_err:
-                logging.debug("Tool complete callback error: %s", cb_err)
 
         if (
             risk_metadata is not None
@@ -2100,30 +2118,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
             def _execute(next_args: dict) -> Any:
-                target = next_args.get("target", "memory")
-                operations = next_args.get("operations")
-                from tools.memory_tool import memory_tool as _memory_tool
-                result = _memory_tool(
-                    action=next_args.get("action"),
-                    target=target,
-                    content=next_args.get("content"),
-                    old_text=next_args.get("old_text"),
-                    operations=operations,
-                    store=agent._memory_store,
+                from agent.agent_runtime_helpers import execute_memory_tool
+
+                return execute_memory_tool(
+                    agent, next_args, effective_task_id, getattr(tool_call, "id", None),
                 )
-                # Mirror successful built-in memory writes to external
-                # providers. All gating/op-expansion lives behind the manager
-                # interface (MemoryManager.notify_memory_tool_write).
-                if agent._memory_manager:
-                    agent._memory_manager.notify_memory_tool_write(
-                        result,
-                        next_args,
-                        build_metadata=lambda: agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=getattr(tool_call, "id", None),
-                        ),
-                    )
-                return result
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,
@@ -2638,33 +2637,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 duration_ms=int(tool_duration * 1000),
                 middleware_trace=list(middleware_trace),
             )
-        if not _execution_blocked:
-            function_result = agent._append_guardrail_observation(
-                function_name,
-                function_args,
-                function_result,
-                failed=_is_error_result,
-                tool_call_id=getattr(tool_call, "id", "") or "",
-            )
-            result_preview = function_result if agent.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
+        function_result = _record_tool_observation(
+            agent, function_name, function_args, function_result, _is_error_result,
+            getattr(tool_call, "id", "") or "", blocked=_execution_blocked,
+        )
+        result_preview = _multimodal_text_summary(function_result)
+        if not agent.verbose_logging:
+            result_preview = result_preview[:200]
         if _is_error_result:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
-
-        # Track file-mutation outcome for the turn-end verifier.  See
-        # the concurrent path for the rationale; both paths must feed
-        # the same state so the footer reflects every tool call in the
-        # turn, not just the parallel ones.
-        if not _execution_blocked:
-            try:
-                agent._record_file_mutation_result(
-                    function_name, function_args, function_result, _is_error_result,
-                )
-            except Exception as _ver_err:
-                logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
         agent._current_tool = None
         _status_suffix = " (error)" if _is_error_result else ""
@@ -2700,7 +2683,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             function_name,
             _tool_content,
             tool_call.id,
-            effect_disposition="unknown" if _execution_timed_out else None,
+            effect_disposition=(
+                "none" if _execution_blocked or tool_nonexecution(function_name, display_function_result)
+                else "unknown" if _execution_timed_out else None
+            ),
         )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
@@ -2713,30 +2699,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         # UI completion/progress events are projections of the canonical tool
         # row, never a competing in-memory authority.
-        if not _execution_blocked and agent.tool_progress_callback:
-            try:
-                agent.tool_progress_callback(
-                    "tool.completed", function_name, None, None,
-                    duration=tool_duration, is_error=_is_error_result,
-                    result=display_function_result,
-                )
-            except Exception as cb_err:
-                logging.debug("Tool progress callback error: %s", cb_err)
-
-        if not _execution_blocked and agent.tool_complete_callback:
-            try:
-                display_args = (
-                    _redact_tool_args_for_display(function_name, function_args)
-                    or function_args
-                )
-                agent.tool_complete_callback(
-                    tool_call.id,
-                    function_name,
-                    display_args,
-                    display_function_result,
-                )
-            except Exception as cb_err:
-                logging.debug("Tool complete callback error: %s", cb_err)
+        _notify_tool_completion(
+            agent, function_name, function_args, display_function_result,
+            tool_call.id, tool_duration, _is_error_result, blocked=_execution_blocked,
+        )
 
         if (
             risk_metadata is not None

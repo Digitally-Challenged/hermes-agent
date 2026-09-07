@@ -3013,9 +3013,24 @@ def terminal_tool(
                 has_host_access=_docker_has_host_access(config),
             )
             if not approval["approved"]:
+                # A timeout here is an approval wait, not a shell/network timeout.
+                # Preserve this distinction in every downstream projection.
+                not_executed = {
+                    "executed": False,
+                    "outcome": approval.get("outcome") or (
+                        "pending_approval" if approval.get("status") == "pending_approval"
+                        else "denied"
+                    ),
+                    "user_consent": False,
+                    "execution_note": (
+                        "Command was not run. This result provides no evidence about "
+                        "the command's target, network connectivity, or service health."
+                    ),
+                }
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "pending_approval":
                     return json.dumps({
+                        **not_executed,
                         "output": "",
                         "exit_code": -1,
                         "error": "",
@@ -3034,6 +3049,7 @@ def terminal_tool(
                     "Use the approval prompt to allow it, or rephrase the command."
                 )
                 return json.dumps({
+                    **not_executed,
                     "output": "",
                     "exit_code": -1,
                     "error": approval.get("message", fallback_msg),
