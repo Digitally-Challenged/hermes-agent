@@ -99,6 +99,18 @@ export function saveHermesConfig(config: HermesConfigRecord, profile?: null | st
   })
 }
 
+export function savePersonalities(
+  personalities: Record<string, unknown>,
+  profile?: null | string
+): Promise<{ ok: boolean }> {
+  return hermesApi<{ ok: boolean }>({
+    ...profileScoped(profile),
+    path: '/api/personalities',
+    method: 'PUT',
+    body: { personalities }
+  })
+}
+
 export function getEnvVars(profile?: null | string): Promise<Record<string, EnvVarInfo>> {
   return hermesApi<Record<string, EnvVarInfo>>({
     ...profileScoped(profile),

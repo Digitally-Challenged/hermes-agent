@@ -20,6 +20,13 @@ class ConfigUpdate(BaseModel):
     profile: Optional[str] = None
 
 
+class PersonalitiesUpdate(BaseModel):
+    """Full ``agent.personalities`` map (name -> {system_prompt, tone, style})."""
+
+    personalities: Dict[str, Any] = {}
+    profile: Optional[str] = None
+
+
 class EnvVarUpdate(BaseModel):
     key: str
     value: str

@@ -1500,6 +1500,7 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
 
 from hermes_cli.web_models import (  # noqa: F401
     ConfigUpdate,
+    PersonalitiesUpdate,
     EnvVarUpdate,
     EnvVarDelete,
     EnvVarReveal,
@@ -7507,6 +7508,33 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
         raise
     except Exception:
         _log.exception("PUT /api/config failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/personalities")
+async def update_personalities(body: PersonalitiesUpdate, profile: Optional[str] = None):
+    """Wholesale-replace ``agent.personalities`` (the custom assistant styles).
+
+    The desktop authoring editor sends the full map on every save, so this is a
+    replace, not a merge — deletion is a key the editor no longer sends.
+    Validation runs through ``hermes_cli.personality`` (the single owner).
+    """
+
+    def _run():
+        from hermes_cli.personality import persist_custom_personalities
+
+        with _profile_scope(body.profile or profile):
+            ok, errors = persist_custom_personalities(body.personalities)
+        if not ok:
+            raise HTTPException(status_code=400, detail="; ".join(errors) or "Invalid personalities")
+        return {"ok": True}
+
+    try:
+        return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/personalities failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

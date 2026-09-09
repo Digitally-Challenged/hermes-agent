@@ -44,6 +44,7 @@ import {
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
+import { PersonalitySettings } from './personality-settings'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
@@ -417,6 +418,7 @@ function ConfigSettingsInner({
                   provider={String(getNested(config, key))}
                 />
               ) : null}
+              {key === 'display.personality' ? <PersonalitySettings profile={scopeProfile} /> : null}
             </div>
           ))}
         </div>

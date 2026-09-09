@@ -184,3 +184,88 @@ def persist_personality(value: Any) -> bool:
         return True
     except Exception:
         return False
+
+
+#: Definition keys a custom personality may carry, in render order. The
+#: renderer (render_personality_prompt) reads exactly these snake_case keys.
+_CUSTOM_PERSONALITY_KEYS = ("system_prompt", "tone", "style")
+
+
+def normalize_custom_personalities(
+    mapping: Any,
+) -> Tuple[Dict[str, Dict[str, str]], list[str]]:
+    """Validate/coerce a ``{name: definition}`` custom-personality map.
+
+    Returns ``(clean_map, errors)``. Each definition is reduced to the keys the
+    renderer understands (``system_prompt``/``tone``/``style``), trailing-empty
+    keys dropped, and ``system_prompt`` required. Names are canonicalized with
+    :func:`normalize_personality_name`; a name that collapses to neutral (empty,
+    ``none``, ``default``, ``neutral``) or that collides with a built-in is
+    rejected — user entries overlay built-ins by name, so a built-in name here
+    would silently shadow a shipped personality.
+    """
+    clean: Dict[str, Dict[str, str]] = {}
+    errors: list[str] = []
+    if not isinstance(mapping, dict):
+        return clean, ["personalities must be a mapping of name -> definition"]
+
+    seen: set[str] = set()
+    for raw_name, definition in mapping.items():
+        name = normalize_personality_name(raw_name)
+        if not name:
+            errors.append(f"invalid personality name: {raw_name!r}")
+            continue
+        if name in BUILTIN_PERSONALITIES:
+            errors.append(f"'{name}' is a built-in personality name")
+            continue
+        if name in seen:
+            errors.append(f"duplicate personality name: {name}")
+            continue
+        seen.add(name)
+
+        if not isinstance(definition, dict):
+            errors.append(f"'{name}' must be an object")
+            continue
+
+        reduced: Dict[str, str] = {}
+        for key in _CUSTOM_PERSONALITY_KEYS:
+            raw = definition.get(key)
+            if raw is None:
+                continue
+            text = prompt_text(raw)
+            if text:
+                reduced[key] = text
+        if not reduced.get("system_prompt"):
+            errors.append(f"'{name}' is missing a system_prompt")
+            continue
+        clean[name] = reduced
+
+    return clean, errors
+
+
+def persist_custom_personalities(mapping: Any) -> Tuple[bool, list[str]]:
+    """Wholesale-replace ``agent.personalities``, validating first.
+
+    The dashboard's custom-style editor sends the full map on every save, so
+    this is a replace, not a merge — deletion is just a key the editor no longer
+    sends. Returns ``(ok, errors)``; on validation failure nothing is written.
+    """
+    clean, errors = normalize_custom_personalities(mapping)
+    if errors:
+        return False, errors
+    try:
+        from hermes_constants import get_hermes_home
+        from utils import atomic_roundtrip_yaml_update
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_roundtrip_yaml_update(config_path, "agent.personalities", clean)
+        try:
+            import os
+
+            os.chmod(config_path, 0o600)
+        except (OSError, NotImplementedError):
+            pass
+        return True, []
+    except Exception:
+        return False, ["failed to write config"]

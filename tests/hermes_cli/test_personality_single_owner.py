@@ -19,7 +19,9 @@ from hermes_cli.personality import (
     available_personalities,
     active_personality_name,
     describe_personality,
+    normalize_custom_personalities,
     normalize_personality_name,
+    persist_custom_personalities,
     persist_personality,
     prompt_text,
     render_personality_prompt,
@@ -143,6 +145,66 @@ def test_persist_personality_never_touches_system_prompt(tmp_path):
         raw = yaml.safe_load((home / "config.yaml").read_text())
         assert raw["agent"]["system_prompt"] == "manual forever"
         assert raw["display"]["personality"] == "kawaii"
+
+
+# ── custom personalities (dashboard authoring) ───────────────────────────────
+
+
+def test_normalize_custom_personalities_coerces_and_drops_empty():
+    clean, errors = normalize_custom_personalities(
+        {
+            "Coder": {
+                "system_prompt": "be terse",
+                "tone": " dry ",
+                "style": "",
+                "junk": "ignored",
+            }
+        }
+    )
+    assert errors == []
+    assert clean == {"coder": {"system_prompt": "be terse", "tone": "dry"}}
+
+
+def test_normalize_custom_personalities_rejects_neutral_builtin_and_empty():
+    _, errors = normalize_custom_personalities(
+        {
+            "none": {"system_prompt": "x"},
+            "helpful": {"system_prompt": "x"},
+            "bad": {},
+        }
+    )
+    assert any("invalid personality name" in e for e in errors)
+    assert any("built-in" in e for e in errors)
+    assert any("missing a system_prompt" in e for e in errors)
+
+
+def test_persist_custom_personalities_roundtrip_and_delete(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+        assert persist_custom_personalities(
+            {"coder": {"system_prompt": "be terse"}}
+        ) == (True, [])
+        raw = yaml.safe_load((home / "config.yaml").read_text())
+        assert raw["agent"]["personalities"]["coder"]["system_prompt"] == "be terse"
+
+        # Wholesale replace — dropping the key deletes it (editor sends full map).
+        assert persist_custom_personalities(
+            {"editor": {"system_prompt": "be thorough", "tone": "warm"}}
+        ) == (True, [])
+        raw = yaml.safe_load((home / "config.yaml").read_text())
+        assert "coder" not in raw["agent"]["personalities"]
+        assert raw["agent"]["personalities"]["editor"]["tone"] == "warm"
+
+
+def test_persist_custom_personalities_rejects_invalid(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+        ok, errors = persist_custom_personalities({"none": {"system_prompt": "x"}})
+        assert ok is False
+        assert errors
+        assert not (home / "config.yaml").exists()
 
 
 # ── v34 migration: one-time reset of stale split-brain state ─────────────────
