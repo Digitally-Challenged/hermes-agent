@@ -43,6 +43,19 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
+        # Opt-in "compact" tool-schema profile. When true, tools that ship a
+        # compact variant advertise a terse description (and terser parameter
+        # docs) instead of their full prose. JSON structure is untouched —
+        # same parameter names, types, enums and required lists — so tool
+        # calling behaves identically; only the prose the model reads shrinks.
+        # Worth ~12 KB of schema per request on a messaging toolset, at the
+        # cost of less in-schema guidance for weaker models.
+        #
+        # The choice is resolved once per request when tool definitions are
+        # built and tool definitions are frozen for the life of a session, so
+        # flipping this never rewrites an in-flight conversation's schemas
+        # (prompt caching stays intact); it takes effect on the next session.
+        "compact_tool_schemas": False,
         # Unlimited by default. The agent turn cap caused more problems than
         # it solved (silent mid-task truncation). null = unlimited; set a
         # positive integer to cap, or use "none"/"unlimited"/"inf"/0/-1 —

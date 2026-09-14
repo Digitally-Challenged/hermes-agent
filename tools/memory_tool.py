@@ -1253,6 +1253,42 @@ MEMORY_SCHEMA = {
 }
 
 
+# --- Compact schema profile (agent.compact_tool_schemas) ---
+# Preserves the long text's hard rules: batch all changes into ONE atomic
+# `operations` call (the char limit is checked only on the final result, so one
+# call can free room and add together), don't repeat the call, what to save vs
+# skip, and the user/memory target split.
+MEMORY_COMPACT_DESCRIPTION = (
+    "Save durable facts across sessions. Injected into every future turn, so "
+    "keep entries compact. Make ALL changes in ONE `operations` call: "
+    "the char limit applies only to the final result, so one call can drop "
+    "stale entries AND add new ones. Don't repeat it; if full, reissue as one "
+    "batch that frees room. Save preferences, corrections, environment facts; "
+    "skip trivia. Procedures belong in a skill."
+)
+
+MEMORY_COMPACT_PARAMS = {
+    "action": "Single-op action. Omit when using 'operations'.",
+    "target": (
+        "'user' = who the user is (name, role, preferences). 'memory' = your "
+        "notes (environment, conventions, lessons)."
+    ),
+    "content": (
+        "Entry content. Required for single-op 'add'/'replace'. Alias: "
+        "'new_text'."
+    ),
+    "old_text": (
+        "Required for single-op 'replace'/'remove': a short unique substring "
+        "identifying the entry. Omit for 'add'."
+    ),
+    "new_text": "Alias for 'content' (single-op). 'content' wins if both set.",
+    "operations": (
+        "Preferred: a list of {action, content?, old_text?} applied atomically "
+        "against the final char budget."
+    ),
+}
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 
@@ -1270,6 +1306,8 @@ registry.register(
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
+    compact_description=MEMORY_COMPACT_DESCRIPTION,
+    compact_parameter_descriptions=MEMORY_COMPACT_PARAMS,
 )
 
 
