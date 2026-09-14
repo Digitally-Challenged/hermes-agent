@@ -140,6 +140,17 @@ def format_context_exhausted_message(
     )
 
 
+def uncompressible_overflow_can_failover(agent) -> bool:
+    """True when a fallback rung remains that could absorb an oversized request.
+
+    Pure predicate so the failover-on-overflow decision is testable without the
+    conversation loop: requires a configured fallback chain with entries left.
+    """
+    chain = getattr(agent, "_fallback_chain", None) or []
+    index = getattr(agent, "_fallback_index", 0) or 0
+    return bool(chain) and index < len(chain)
+
+
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
     """Inject the one-time wall-clock wrap-up notice when past 80% of budget.
 
