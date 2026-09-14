@@ -88,6 +88,7 @@ from agent.retry_utils import (
     zai_coding_overload_retry_ceiling,
 )
 from agent.repetition_guard import is_repetition_dominated
+from agent.tool_guardrails import record_invalid_tool_call
 from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
 # finalizer at turn end.
@@ -7027,6 +7028,11 @@ def run_conversation(
                             content = _invalid_tool_name_error_content(
                                 _tc_name, agent.valid_tool_names
                             )
+                            # This call never reaches _execute_tool_calls, so
+                            # the guardrail would never see it. Count it.
+                            record_invalid_tool_call(
+                                agent, _tc_name, "invalid_tool_name"
+                            )
                         else:
                             content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
                         append_message(messages, {
@@ -7130,6 +7136,11 @@ def run_conversation(
                                     f"Error: Invalid JSON arguments. {err}. "
                                     f"For tools with no required parameters, use an empty object: {{}}. "
                                     f"Please retry with valid JSON."
+                                )
+                                # Malformed wrappers never dispatch, so the
+                                # guardrail would never count them.
+                                record_invalid_tool_call(
+                                    agent, tc.function.name, "invalid_tool_arguments"
                                 )
                             else:
                                 tool_result = "Skipped: other tool call in this response had invalid JSON."
@@ -7289,6 +7300,12 @@ def run_conversation(
                                 tc.function.name, agent.valid_tool_names
                             ),
                         })
+                        # A mixed batch resets _invalid_tool_retries to 0 on
+                        # every iteration, so this is the only counter that
+                        # can bound a partially-degraded model.
+                        record_invalid_tool_call(
+                            agent, tc.function.name, "invalid_tool_name"
+                        )
                     assistant_message.tool_calls = [
                         tc for tc in assistant_message.tool_calls
                         if tc.function.name in agent.valid_tool_names
