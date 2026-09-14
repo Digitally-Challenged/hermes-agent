@@ -406,14 +406,19 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
         _retry.restart_with_compressed_messages = True
         return st.done("break")
 
-    # Can't compress further and already at minimum tier.
+    # Can't compress further and already at minimum tier. Report the whole
+    # request against the window — compression only shrinks history, so a
+    # tiny-history / huge-request overflow would otherwise read "44 tokens".
+    from agent.conversation_loop import format_context_exhausted_message
+
+    _exhausted = format_context_exhausted_message(
+        st.request_tokens(), new_tokens,
+        getattr(getattr(agent, "context_compressor", None), "context_length", None),
+    )
     return st.fail_turn(
         site_copy("context_overflow", model=agent.model),
-        notices=(
-            f"❌ The conversation is too long for the model ({new_tokens:,} tokens) and cannot be shrunk further.",
-            _RETRY_HINT,
-        ),
-        log=("%sContext length exceeded: %s tokens. Cannot compress further.", agent.log_prefix, f"{new_tokens:,}"),
+        notices=(f"❌ {_exhausted}", _RETRY_HINT),
+        log=("%s%s", agent.log_prefix, _exhausted),
     )
 
 
