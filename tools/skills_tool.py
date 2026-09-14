@@ -659,6 +659,9 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         resolved_platform = platform or os.getenv("HERMES_PLATFORM") or _get_session_platform()
         global_disabled = skills_cfg.get("disabled", [])
         if resolved_platform:
+            from agent.skill_utils import platform_allowlist_disabled
+            if name in platform_allowlist_disabled(skills_cfg, resolved_platform):
+                return True
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
             if platform_disabled is not None:
                 # A globally-disabled skill stays disabled on every platform;
