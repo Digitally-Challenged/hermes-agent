@@ -478,6 +478,21 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return global_disabled
 
 
+def get_skills_index_style() -> str:
+    """Read ``skills.index_style`` from config.yaml ("full" or "names_only").
+
+    Reads the config file directly (no CLI config imports) to stay
+    lightweight, matching ``get_disabled_skill_names`` above. Any value
+    other than "names_only" is treated as the "full" default.
+    """
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills") if parsed else None
+    if not isinstance(skills_cfg, dict):
+        return "full"
+    style = skills_cfg.get("index_style")
+    return "names_only" if style == "names_only" else "full"
+
+
 def get_all_skill_names() -> Set[str]:
     """Directory names of every ``SKILL.md`` root across all skills dirs."""
     names: Set[str] = set()

@@ -33,6 +33,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    get_skills_index_style,
     iter_skill_index_files,
     org_id_of_path,
     parse_frontmatter,
@@ -1707,8 +1708,18 @@ def _build_snapshot_entry(
     skills_dir: Path,
     frontmatter: dict,
     description: str,
+    *,
+    flat_root: bool = False,
 ) -> dict:
-    """Build a serialisable metadata dict for one skill."""
+    """Build a serialisable metadata dict for one skill.
+
+    ``flat_root``: the skill was discovered directly under a directory with
+    no category subdirectory structure (currently only ``skills.external_dirs``
+    entries — the directory itself has no notion of "category"). Without this,
+    a skill at ``<ext_dir>/<skill-name>/SKILL.md`` would get its own category
+    named after the skill, producing one index header per skill. Flat-root
+    skills instead collapse under a single ``"general"`` category header.
+    """
     rel_path = skill_file.relative_to(skills_dir)
     parts = rel_path.parts
 
@@ -1722,7 +1733,12 @@ def _build_snapshot_entry(
 
     if len(parts) >= 2:
         skill_name = parts[-2]
-        category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
+        if len(parts) > 2:
+            category = "/".join(parts[:-2])
+        elif flat_root:
+            category = "general"
+        else:
+            category = parts[0]
     else:
         category = "general"
         skill_name = skill_file.parent.name
@@ -1911,6 +1927,13 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
+    # skills.index_style: "names_only" reuses the same names-only rendering
+    # already used to demote individual categories under coding_context focus
+    # (see the `demoted` set below), but applies it to every category,
+    # independent of focus mode. Focus mode's own per-category demotion is
+    # untouched either way — the two compose (union), so leaving this at the
+    # default "full" does not disturb existing focus-mode behavior.
+    names_only_all = get_skills_index_style() == "names_only"
     cache_key = (
         str(skills_dir),
         tuple(str(d) for d in external_dirs),
@@ -1920,6 +1943,7 @@ def _build_skills_system_prompt_inner(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        names_only_all,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -2094,7 +2118,9 @@ def _build_skills_system_prompt_inner(
                 is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
                 if not is_compatible:
                     continue
-                entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
+                entry = _build_snapshot_entry(
+                    skill_file, ext_dir, frontmatter, desc, flat_root=True
+                )
                 skill_name = entry["skill_name"]
                 frontmatter_name = entry["frontmatter_name"]
                 if frontmatter_name in seen_skill_names:
@@ -2137,17 +2163,29 @@ def _build_skills_system_prompt_inner(
     # what the index stops showing them. Match on the top-level category
     # segment so nested categories ("social-media/twitter") are demoted with
     # their parent.
-    demoted = frozenset(
-        cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
-    )
+    if names_only_all:
+        # skills.index_style: names_only — demote every category, regardless
+        # of coding_context focus (that mechanism still applies its own
+        # per-category demotion on top; the union changes nothing since
+        # everything is already demoted).
+        demoted = frozenset(skills_by_category.keys())
+    else:
+        demoted = frozenset(
+            cat for cat in skills_by_category
+            if cat.split("/", 1)[0] in (compact_categories or frozenset())
+        )
 
     hidden_note = ""
-    if demoted:
+    if demoted and not names_only_all:
         hidden_note = (
             "\n(Categories marked [names only] are outside the current coding "
             "context, so their descriptions are omitted — the skills work "
             "normally and load with skill_view(name) as usual.)"
+        )
+    elif demoted and names_only_all:
+        hidden_note = (
+            "\n(Skill descriptions are omitted (skills.index_style: names_only) "
+            "— the skills work normally and load with skill_view(name) as usual.)"
         )
 
     if not skills_by_category:
