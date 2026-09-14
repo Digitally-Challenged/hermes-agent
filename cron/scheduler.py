@@ -1271,14 +1271,52 @@ _CWD_LOCK_TIMEOUT_FLOOR_SECONDS = 120.0
 _CWD_LOCK_TIMEOUT_MARGIN_SECONDS = 60.0
 
 
-def _cron_inactivity_seconds() -> float:
-    """Parse HERMES_CRON_TIMEOUT (seconds). 0 = unlimited; bad input = 600.
+def _cron_inactivity_seconds(cfg: Optional[dict] = None) -> float:
+    """Resolve the cron inactivity timeout (seconds). 0 = unlimited.
+
+    Resolution order: ``cron.timeout_seconds`` in config.yaml (when it
+    parses as a number) > the deprecated ``HERMES_CRON_TIMEOUT`` env var
+    (kept only for backward compatibility) > 600.
+
+    ``cfg`` may be passed as an already-loaded config dict (callers that
+    have one in scope should pass it to avoid a redundant load) — either
+    the merged ``load_config()`` result or the raw ``read_user_config_raw()``
+    result both work, since ``timeout_seconds`` is only ever treated as
+    "explicitly set" when the key is present with a value. When ``cfg`` is
+    omitted, config.yaml is read via ``read_user_config_raw()`` — the RAW
+    on-disk file, not the ``load_config()``-merged view — because
+    ``cron.timeout_seconds`` has a DEFAULT_CONFIG default (600) and a merged
+    read would make it look "explicitly set" on every call, permanently
+    shadowing the deprecated env var. Any failure to load/parse config
+    falls through to the env var, then the default — this must never raise.
 
     Shared by run_job's inactivity monitor (which maps 0 to "no limit") and
     the cwd-lock bound below (which keeps the wait bounded regardless) so
     the two sites cannot drift apart — the lock bound must stay at or above
     the inactivity limit or waiters would fail while a healthy holder runs.
     """
+    _cfg = cfg
+    if _cfg is None:
+        try:
+            from hermes_cli.config import read_user_config_raw
+
+            _cfg = read_user_config_raw() or {}
+        except Exception:
+            _cfg = {}
+    if isinstance(_cfg, dict):
+        _cron_cfg = _cfg.get("cron")
+        if isinstance(_cron_cfg, dict):
+            _configured = _cron_cfg.get("timeout_seconds")
+            if _configured is not None:
+                try:
+                    return float(_configured)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Invalid cron.timeout_seconds=%r; falling back to "
+                        "HERMES_CRON_TIMEOUT/default",
+                        _configured,
+                    )
+
     raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
     if not raw:
         return 600.0
@@ -5778,14 +5816,17 @@ def run_job(
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run
-        # for hours if it's actively calling tools / receiving stream tokens,
+        # for hours if it's actively calling tools or receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured
         # duration is caught and killed.  Default 600s (10 min inactivity);
-        # override via HERMES_CRON_TIMEOUT env var.  0 = unlimited.
+        # configure via cron.timeout_seconds in config.yaml (HERMES_CRON_TIMEOUT
+        # env var still works but is deprecated).  0 = unlimited.
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _cron_timeout = _cron_inactivity_seconds()
+        # Pass the config.yaml dict already loaded above (_cfg) so this
+        # doesn't pay for a second config load.
+        _cron_timeout = _cron_inactivity_seconds(_cfg)
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):

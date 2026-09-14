@@ -226,6 +226,60 @@ class TestInactivityTimeout:
         assert result["final_response"] == "no activity tracker"
 
 
+class TestCronTimeoutSecondsResolution:
+    """Tests for cron.scheduler._cron_inactivity_seconds resolution order:
+
+    explicit cron.timeout_seconds config value > HERMES_CRON_TIMEOUT env
+    var (deprecated, kept for backward compat) > 600 default.
+    """
+
+    def test_config_value_wins_over_env(self, monkeypatch):
+        """An explicit cron.timeout_seconds in config wins even when the
+        deprecated env var is also set."""
+        from cron.scheduler import _cron_inactivity_seconds
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
+        cfg = {"cron": {"timeout_seconds": 900}}
+        assert _cron_inactivity_seconds(cfg) == 900.0
+
+    def test_env_var_still_works_when_config_unset(self, monkeypatch):
+        """Backward compat: HERMES_CRON_TIMEOUT is honored when no
+        cron.timeout_seconds key is present in config."""
+        from cron.scheduler import _cron_inactivity_seconds
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "792")
+        assert _cron_inactivity_seconds({}) == 792.0
+        assert _cron_inactivity_seconds({"cron": {}}) == 792.0
+
+    def test_default_600_when_nothing_set(self, monkeypatch):
+        """With no config value and no env var, falls back to 600."""
+        from cron.scheduler import _cron_inactivity_seconds
+
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        assert _cron_inactivity_seconds({}) == 600.0
+
+    def test_invalid_config_value_falls_back_to_env_then_default(self, monkeypatch):
+        """A non-numeric cron.timeout_seconds is ignored (with a warning),
+        falling through to the env var, then the default."""
+        from cron.scheduler import _cron_inactivity_seconds
+
+        cfg = {"cron": {"timeout_seconds": "not-a-number"}}
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1500")
+        assert _cron_inactivity_seconds(cfg) == 1500.0
+
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        assert _cron_inactivity_seconds(cfg) == 600.0
+
+    def test_config_value_zero_means_unlimited(self, monkeypatch):
+        """cron.timeout_seconds: 0 is honored as an explicit unlimited
+        setting, not treated as unset."""
+        from cron.scheduler import _cron_inactivity_seconds
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
+        cfg = {"cron": {"timeout_seconds": 0}}
+        assert _cron_inactivity_seconds(cfg) == 0.0
+
+
 class TestSysPathOrdering:
     """Test that sys.path is set before repo-level imports."""
 
