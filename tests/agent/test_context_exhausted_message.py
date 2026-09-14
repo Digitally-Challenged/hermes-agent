@@ -19,3 +19,13 @@ def test_reports_request_size_window_and_uncompressible_share():
 def test_unknown_window_does_not_crash():
     msg = format_context_exhausted_message(1_000, 500, None)
     assert "model's-token window" in msg and "1,000" in msg
+
+
+def test_uncompressible_overflow_fails_over_only_while_chain_remains():
+    from types import SimpleNamespace
+    from agent.conversation_loop import uncompressible_overflow_can_failover
+
+    assert uncompressible_overflow_can_failover(SimpleNamespace(_fallback_chain=[{"p": 1}], _fallback_index=0))
+    assert not uncompressible_overflow_can_failover(SimpleNamespace(_fallback_chain=[{"p": 1}], _fallback_index=1))
+    assert not uncompressible_overflow_can_failover(SimpleNamespace(_fallback_chain=[], _fallback_index=0))
+    assert not uncompressible_overflow_can_failover(SimpleNamespace())

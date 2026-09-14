@@ -120,6 +120,17 @@ RUN_BUDGET_WRAPUP_NOTICE = (
 
 
 
+
+def uncompressible_overflow_can_failover(agent) -> bool:
+    """True when a fallback rung remains that could absorb an oversized request.
+
+    Pure predicate so the failover-on-overflow decision is testable without the
+    conversation loop: requires a configured fallback chain with entries left.
+    """
+    chain = getattr(agent, "_fallback_chain", None) or []
+    index = getattr(agent, "_fallback_index", 0) or 0
+    return bool(chain) and index < len(chain)
+
 def format_context_exhausted_message(
     request_tokens: int, history_tokens: int, context_length: int | None
 ) -> str:
@@ -5955,6 +5966,19 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
+                        # The request itself does not fit and history can't
+                        # shrink it. Before failing the turn, hand it to the
+                        # next fallback provider — a larger window there
+                        # simply works (a 84K request vs a 65K local window
+                        # fits the 98K fallback rung). Advances the chain on
+                        # each pass, so a too-small rung just cascades.
+                        if uncompressible_overflow_can_failover(agent) and agent._try_activate_fallback():
+                            agent._buffer_status(
+                                "🔄 Request exceeds this model's context window and cannot be "
+                                "compressed — switching to a larger-context fallback model..."
+                            )
+                            _retry.restart_with_compressed_messages = True
+                            break
                         _request_tokens = estimate_request_tokens_rough(
                             api_messages, tools=agent.tools or None
                         )
