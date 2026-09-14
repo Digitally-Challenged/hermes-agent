@@ -38,6 +38,8 @@ dependencies = [
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
   "openai==2.24.0",
+  # tool_search stems catalog text with it; missing → deferral silently off (2026-09-14).
+  "snowballstemmer==3.1.1",
   "certifi==2026.5.20",
   "python-dotenv==1.2.2",
   "fire==0.7.1",
