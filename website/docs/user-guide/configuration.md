@@ -1737,6 +1737,8 @@ tool_loop_guardrails:
 
 `hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
 
+Tool calls that never reach dispatch — a hallucinated tool name, or a malformed `tool_call` wrapper whose arguments are not valid JSON — also count toward `same_tool_failure`. They have their own three-strike retry counters, but those reset to `0` whenever the same batch also contains one valid call, so a partially-degraded model could otherwise emit invalid calls indefinitely without ever tripping a guardrail.
+
 ### Per-turn runaway-loop caps
 
 Separate from the failure-based thresholds above, `loop_caps` sets hard ceilings on how many `web_search` calls and subagent spawns a single agent loop (turn) may make. The counters reset at the start of every turn, so a legitimate multi-turn session is never starved — but a single turn that spirals into an unbounded search or delegation loop is stopped. These are always on and fire regardless of `hard_stop_enabled`. A single turn issuing dozens of web searches or spawning dozens of subagents is already pathological, so the defaults are low. When a cap is reached, the offending tool call is blocked with an explanatory message and the turn stops cleanly instead of burning the rest of the budget. Set either value to `0` to disable that cap entirely.

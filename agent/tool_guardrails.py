@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
+
+logger = logging.getLogger(__name__)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -853,3 +856,39 @@ def _sha256(value: str) -> str:
     # encode raises and takes down the whole conversation loop. The hash only
     # needs deterministic bytes, not valid UTF-8.
     return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def record_invalid_tool_call(agent: Any, tool_name: str, reason: str) -> None:
+    """Count a tool call that never reached dispatch as a guardrail failure.
+
+    Hallucinated tool names and malformed ``tool_call`` wrappers are
+    short-circuited in the conversation loop before ``_execute_tool_calls``,
+    so ``after_call`` never sees them. Without this they burn iterations for
+    free: the dedicated ``_invalid_tool_retries`` / ``_invalid_json_retries``
+    counters reset to 0 whenever a turn also contains one valid call, which
+    is exactly what a partially-degraded model produces.
+
+    Only the *same-tool* failure counter is meaningful here — a rejected call
+    has no canonical arguments to key an exact-failure signature on, so the
+    args are recorded as empty. Best-effort: never let guardrail bookkeeping
+    break the turn.
+
+    Production evidence (2026-09-10): a single turn logged 117 malformed
+    wrappers and 9 hallucinated names alongside 90 failing ``vision_analyze``
+    calls, and still exited via ``max_iterations_reached(90/90)``.
+    """
+    controller = getattr(agent, "_tool_guardrails", None)
+    if controller is None:
+        return
+    try:
+        decision = controller.after_call(
+            tool_name or "<unnamed>",
+            {},
+            json.dumps({"success": False, "error": reason}, ensure_ascii=False),
+            failed=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("invalid-tool-call guardrail record failed: %s", exc)
+        return
+    if decision.should_halt and getattr(agent, "_tool_guardrail_halt_decision", None) is None:
+        agent._tool_guardrail_halt_decision = decision

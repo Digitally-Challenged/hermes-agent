@@ -4415,6 +4415,72 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
     )
 
 
+# Servers that have rejected ``chat_template_kwargs``, keyed by base_url.
+# Populated reactively by the retry below so a server only pays the 400 once
+# per process. Never persisted — a restarted/upgraded server gets a fresh try.
+_CHAT_TEMPLATE_KWARGS_UNSUPPORTED: set[str] = set()
+
+
+def _reset_chat_template_kwargs_support() -> None:
+    """Forget every recorded rejection (test hook)."""
+    _CHAT_TEMPLATE_KWARGS_UNSUPPORTED.clear()
+
+
+def _mark_chat_template_kwargs_unsupported(base_url: str) -> None:
+    if base_url:
+        _CHAT_TEMPLATE_KWARGS_UNSUPPORTED.add(base_url)
+
+
+def _chat_template_kwargs_unsupported(base_url: str) -> bool:
+    return bool(base_url) and base_url in _CHAT_TEMPLATE_KWARGS_UNSUPPORTED
+
+
+def _is_chat_template_kwargs_rejection(exc: Exception) -> bool:
+    """Detect a provider 400 that rejects the ``chat_template_kwargs`` field.
+
+    ``chat_template_kwargs`` (typically ``{"enable_thinking": false}`` for
+    Qwen) is a vLLM / LM Studio extension. Other OpenAI-compatible endpoints
+    reject it outright:
+
+        chat_template_kwargs: Extra inputs are not permitted
+
+    The field only steers chat-template rendering, so a reply produced
+    without it is still valid — one retry without it is the right reaction,
+    not a hard failure. Deliberately narrow: the message must name
+    ``chat_template_kwargs`` so this never intercepts the structured-output
+    (``response_format`` / ``output_config``) rejection handled above.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    err_lower = str(exc).lower()
+    if "chat_template_kwargs" not in err_lower:
+        return False
+    if "extra inputs are not permitted" in err_lower:
+        return True
+    return _is_unsupported_parameter_error(exc, "chat_template_kwargs")
+
+
+def _without_chat_template_kwargs(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without the ``extra_body['chat_template_kwargs']`` entry.
+
+    Returns None when there is nothing to strip, so call sites never retry a
+    request the removal did not change.
+    """
+    extra_body = kwargs.get("extra_body")
+    if not isinstance(extra_body, dict) or "chat_template_kwargs" not in extra_body:
+        return None
+    retry_kwargs = dict(kwargs)
+    remaining = {
+        k: v for k, v in extra_body.items() if k != "chat_template_kwargs"
+    }
+    if remaining:
+        retry_kwargs["extra_body"] = remaining
+    else:
+        retry_kwargs.pop("extra_body", None)
+    return retry_kwargs
+
+
 def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
     """Copy *kwargs* without any ``response_format`` request field.
 
@@ -9460,6 +9526,13 @@ def _call_llm_impl(
     if _is_anthropic_compat_endpoint(request_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
+    # This server already answered 400 for chat_template_kwargs this process;
+    # don't pay the round-trip again.
+    if _chat_template_kwargs_unsupported(_client_base):
+        _pruned = _without_chat_template_kwargs(kwargs)
+        if _pruned is not None:
+            kwargs = _pruned
+
     # Streaming path: return the raw SDK Stream iterator directly. This is used by
     # the MoA aggregator so its tokens stream to the user. It deliberately skips
     # _validate_llm_response and the temperature/max_tokens/payment fallback chain
@@ -9611,6 +9684,38 @@ def _call_llm_impl(
                     raise
                 first_err = retry_err
                 kwargs = retry_kwargs
+
+        if _is_chat_template_kwargs_rejection(first_err):
+            retry_kwargs = _without_chat_template_kwargs(kwargs)
+            if retry_kwargs is not None:
+                _mark_chat_template_kwargs_unsupported(
+                    str(getattr(client, "base_url", "") or "")
+                )
+                logger.info(
+                    "Auxiliary %s: provider rejected chat_template_kwargs; "
+                    "retrying once without it and remembering that this "
+                    "server does not support it: %s",
+                    task or "call", first_err,
+                )
+                try:
+                    return _validate_llm_response(
+                        _relay_sync_completion(
+                            client,
+                            retry_kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
+                except Exception as retry_err:
+                    if not (
+                        _is_payment_error(retry_err)
+                        or _is_connection_error(retry_err)
+                        or _is_auth_error(retry_err)
+                        or "max_tokens" in str(retry_err)
+                        or "unsupported_parameter" in str(retry_err)
+                    ):
+                        raise
+                    first_err = retry_err
+                    kwargs = retry_kwargs
 
         if _is_structured_output_rejection(first_err):
             retry_kwargs = _without_structured_output_format(kwargs)
@@ -10270,6 +10375,13 @@ async def _async_call_llm_impl(
     if _is_anthropic_compat_endpoint(request_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
+    # This server already answered 400 for chat_template_kwargs this process;
+    # don't pay the round-trip again.
+    if _chat_template_kwargs_unsupported(_client_base):
+        _pruned = _without_chat_template_kwargs(kwargs)
+        if _pruned is not None:
+            kwargs = _pruned
+
     try:
         # Retry ONCE on the same provider for a transient transport blip
         # before the except-chain escalates to fallback — see call_llm()
@@ -10356,6 +10468,38 @@ async def _async_call_llm_impl(
                     raise
                 first_err = retry_err
                 kwargs = retry_kwargs
+
+        if _is_chat_template_kwargs_rejection(first_err):
+            retry_kwargs = _without_chat_template_kwargs(kwargs)
+            if retry_kwargs is not None:
+                _mark_chat_template_kwargs_unsupported(
+                    str(getattr(client, "base_url", "") or "")
+                )
+                logger.info(
+                    "Auxiliary %s (async): provider rejected "
+                    "chat_template_kwargs; retrying once without it and "
+                    "remembering that this server does not support it: %s",
+                    task or "call", first_err,
+                )
+                try:
+                    return _validate_llm_response(
+                        await _relay_async_completion(
+                            client,
+                            retry_kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
+                except Exception as retry_err:
+                    if not (
+                        _is_payment_error(retry_err)
+                        or _is_connection_error(retry_err)
+                        or _is_auth_error(retry_err)
+                        or "max_tokens" in str(retry_err)
+                        or "unsupported_parameter" in str(retry_err)
+                    ):
+                        raise
+                    first_err = retry_err
+                    kwargs = retry_kwargs
 
         if _is_structured_output_rejection(first_err):
             retry_kwargs = _without_structured_output_format(kwargs)
