@@ -724,8 +724,12 @@ class MemoryStore:
         else:
             header = f"{MEMORY_BLOCK_HEADERS['memory']} [{pct}% — {current:,}/{limit:,} chars]"
 
-        separator = "═" * 46
-        return f"{separator}\n{header}\n{separator}\n{content}"
+        # Plain markdown heading instead of a box-drawing border: box-drawing
+        # characters tokenize inefficiently and add no information the model
+        # needs. The heading text itself (MEMORY_BLOCK_HEADERS values) is
+        # preserved verbatim — conversation_compression.py's stale-block
+        # detection matches on that exact substring.
+        return f"## {header}\n{content}"
 
     @staticmethod
     def _read_raw_checked(path: Path) -> Tuple[str, bool]:
