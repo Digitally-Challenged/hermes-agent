@@ -2484,6 +2484,14 @@ DEFAULT_CONFIG = {
         # job. Interactive toolsets (messaging/clarify) stay denied in cron
         # context regardless of this setting.
         "allow_agent_scheduling": False,
+        # Inactivity timeout (seconds) for cron job agent runs: the job can
+        # run for hours while actively calling tools / receiving stream
+        # tokens, but is killed after this many seconds with NO activity.
+        # Resolution order: this config value (when set to a positive
+        # number) > the deprecated HERMES_CRON_TIMEOUT env var (kept only
+        # for backward compatibility — prefer this key) > 600. Set to 0
+        # for unlimited (no inactivity timeout).
+        "timeout_seconds": 600,
         # Pre-dispatch configuration validation (T1-26): before constructing
         # any agent machinery for a job, verify the provider API key resolves
         # (unless a fallback chain is configured), attached skills are ready
