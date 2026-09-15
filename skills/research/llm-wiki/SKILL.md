@@ -1,7 +1,7 @@
 ---
 name: llm-wiki
 description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
-version: 2.1.0
+version: 3.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [wiki, knowledge-base, research, notes, markdown, rag-alternative]
     category: research
-    related_skills: [obsidian, arxiv]
+    related_skills: [obsidian, arxiv, grounded-citations]
 ---
 
 # Karpathy's LLM Wiki
@@ -31,11 +31,13 @@ Use this skill when the user:
 - Asks to ingest, add, or process a source into their wiki
 - Asks a question and an existing wiki is present at the configured path
 - Asks to lint, audit, or health-check their wiki
+- Asks to split, merge, export, or brief from the wiki
 - References their wiki, knowledge base, or "notes" in a research context
 
 ## Wiki Location
 
-**Location:** Set via `WIKI_PATH` environment variable (e.g. in `${HERMES_HOME:-~/.hermes}/.env`).
+**Location:** Set via `WIKI_PATH` environment variable (e.g. in `${HERMES_HOME:-~/.hermes}/.env`),
+or the equivalent `skills.config.wiki.path` key in `config.yaml`.
 
 If unset, defaults to `~/wiki`.
 
@@ -45,6 +47,13 @@ WIKI="${WIKI_PATH:-$HOME/wiki}"
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
 any editor. No database, no special tooling required.
+
+**Why two knobs.** `WIKI_PATH` is the environment-variable interface and the one the
+skill itself reads. `skills.config.wiki.path` is the config-file interface, and it is
+what the WebUI's *LLM Wiki* observability widget reads to decide whether the wiki is
+set up at all. Set both — they cost nothing and the widget silently reads `Unavailable`
+if only the config key is absent (or vice versa). `hermes config set
+skills.config.wiki.path '~/wiki'` writes the config side.
 
 ## Architecture: Three Layers
 
@@ -69,13 +78,94 @@ wiki/
 cross-referenced by the agent.
 **Layer 3 — The Schema:** `SCHEMA.md` defines structure, conventions, and tag taxonomy.
 
+The four Layer-2 directories above are the **canonical minimum**, not a fixed set.
+A domain usually needs more — see the next section.
+
+## Page Types: The Extensible Category Model
+
+Four generic directories (`entities/`, `concepts/`, `comparisons/`, `queries/`) are
+enough for a hobby wiki and too coarse for a real domain. Competitive intelligence,
+for example, needs products and models tracked separately from the companies that
+ship them, and regulations tracked separately from the doctrine they constrain.
+
+**The page model is data, not code.** Each wiki declares its own page types in
+`SCHEMA.md` under a `## Page Types` heading, in this exact shape:
+
+```markdown
+## Page Types
+
+- `entities/` → `entity` — organizations and notable people
+- `products/` → `product` — shipped commercial offerings
+- `models/` → `model` — foundation models and architectures
+- `concepts/` → `concept` — techniques and domain topics
+- `regulations/` → `regulation` — rules, statutes, guidance
+- `comparisons/` → `comparison` — side-by-side analyses
+- `timelines/` → `timeline` — chronological tracking
+- `queries/` → `query` — filed query results worth keeping
+```
+
+Rules that make this work:
+
+- **One directory per page type.** A page lives in exactly one directory, and that
+  directory fixes its `type:` frontmatter value.
+- **The mapping is parsed, not guessed.** `scripts/wiki_lint.py` reads this table, so
+  adding a row is genuinely all it takes to add a page type. Keep the
+  ``- `dir/` → `type` `` shape (a `->` or `:` separator also parses).
+- **Adding a page type is a three-step change:** add the row to `SCHEMA.md`, create the
+  directory, add the section to `index.md`. Never create the directory first — a page
+  directory the schema doesn't declare is invisible to lint and to every future session.
+- **Removing a page type** means archiving its pages (see *Archiving*), deleting the
+  row, and removing the index section. Do not leave an empty undeclared directory.
+
+Lint enforces directory↔type agreement: a page in `products/` declaring `type: concept`
+is flagged. That check is what keeps the model honest over hundreds of edits.
+
+`summary` is a valid `type:` value with no dedicated directory — a summary page is a
+short synthesis living in whichever directory its subject belongs to.
+
+Choosing page types for a new wiki: start from what a *question* looks like in the
+domain. "How does X compare to Y" needs `comparisons/`. "What changed when" needs
+`timelines/`. "Are we allowed to do this" needs `regulations/`. Types should map to
+question shapes, not to your org chart.
+
+## Domain Packs
+
+Some domains need more than a page-type table. They need different evidence standards,
+different page thresholds, and different mandatory sections — because the cost of a
+wrong page is different.
+
+A **domain pack** is the reusable version of that: a reference file with the full
+`SCHEMA.md` for a domain, plus the reasoning for its non-obvious choices.
+
+- **`references/domain-pack-health.md`** — health optimization (training, nutrition,
+  compounds, peptides, prescriptions, psychedelics, biomarkers, mental health,
+  longevity). This is the most opinionated pack, because it is the one where the
+  generic defaults are actively dangerous. It adds three non-optional mechanisms:
+  **evidence grading** (`evidence: rct | observational | mechanistic | anecdote`),
+  **mandatory compound safety blocks** (`Dosing` / `Interactions` /
+  `Contraindications` / `High-Risk Signals` on every compound and protocol page), and
+  **units on every number** (a bare dose figure is a defect, not a style nit).
+
+Use a pack when the user's domain matches; copy its schema, then adjust. When a domain
+has no pack, the generic template is the starting point — but ask what a *wrong* page
+would cost, and if the answer is "someone could get hurt," tighten the schema before
+the first ingest rather than after.
+
+Write a pack when you have built a schema for a domain that is likely to recur, and
+the reasoning behind its thresholds would otherwise be lost.
+
 ## Resuming an Existing Wiki (CRITICAL — do this every session)
 
 When the user has an existing wiki, **always orient yourself before doing anything**:
 
-① **Read `SCHEMA.md`** — understand the domain, conventions, and tag taxonomy.
+① **Read `SCHEMA.md`** — understand the domain, conventions, page types, and tag taxonomy.
 ② **Read `index.md`** — learn what pages exist and their summaries.
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
+④ **Run the stats pass** — one command gives you the shape of the whole wiki:
+
+```bash
+python scripts/wiki_lint.py "$WIKI" --summary-only
+```
 
 ```bash
 WIKI="${WIKI_PATH:-$HOME/wiki}"
@@ -89,22 +179,30 @@ Only after orientation should you ingest, query, or lint. This prevents:
 - Creating duplicate pages for entities that already exist
 - Missing cross-references to existing content
 - Contradicting the schema's conventions
+- Using a page type the schema doesn't declare
 - Repeating work already logged
 
 For large wikis (100+ pages), also run a quick `search_files` for the topic
 at hand before creating anything new.
 
+**Orientation is not skippable when the context is thin.** If the session is a cron
+run, a subagent, or a resumed conversation with no wiki context loaded, orientation is
+the only thing standing between you and a duplicate pile. Read before you write.
+
 ## Initializing a New Wiki
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
-2. Create the directory structure above
-3. Ask the user what domain the wiki covers — be specific
-4. Write `SCHEMA.md` customized to the domain (see template below)
-5. Write initial `index.md` with sectioned header
-6. Write initial `log.md` with creation entry
-7. Confirm the wiki is ready and suggest first sources to ingest
+1. Determine the wiki path (`$WIKI_PATH` / `skills.config.wiki.path`, or ask; default `~/wiki`)
+2. **Ask what domain the wiki covers — be specific.** The domain drives the page types,
+   the tag taxonomy, and the out-of-scope line. A vague answer ("tech stuff") produces a
+   wiki that can't apply its own page thresholds.
+3. Choose page types that match the domain's question shapes (see *Page Types* above)
+   and create those directories plus `raw/`
+4. Write `SCHEMA.md` customized to the domain (template below)
+5. Write initial `index.md` with one section per declared page type
+6. Write initial `log.md` with a creation entry
+7. Confirm the wiki is ready, report the derived stats, and suggest first sources to ingest
 
 ### SCHEMA.md Template
 
@@ -115,6 +213,7 @@ Adapt to the user's domain. The schema constrains agent behavior and ensures con
 
 ## Domain
 [What this wiki covers — e.g., "AI/ML research", "personal health", "startup intelligence"]
+[Add an explicit OUT OF SCOPE line. Wikis die of scope creep more often than of staleness.]
 
 ## Conventions
 - File names: lowercase, hyphens, no spaces (e.g., `transformer-architecture.md`)
@@ -127,6 +226,13 @@ Adapt to the user's domain. The schema constrains agent behavior and ensures con
   at the end of paragraphs whose claims come from a specific source. This lets a reader trace each
   claim back without re-reading the whole raw file. Optional on single-source pages where the
   `sources:` frontmatter is enough.
+
+## Page Types
+- `entities/` → `entity` — organizations and notable people
+- `concepts/` → `concept` — techniques, doctrine, domain topics
+- `comparisons/` → `comparison` — side-by-side analyses
+- `queries/` → `query` — filed query results worth keeping
+[Add rows for the page types this domain needs. See the skill's Page Types section.]
 
 ## Frontmatter
   ```yaml
@@ -183,27 +289,6 @@ add it here first, then use it. This prevents tag sprawl.
 - **Split a page** when it exceeds ~200 lines — break into sub-topics with cross-links
 - **Archive a page** when its content is fully superseded — move to `_archive/`, remove from index
 
-## Entity Pages
-One page per notable entity. Include:
-- Overview / what it is
-- Key facts and dates
-- Relationships to other entities ([[wikilinks]])
-- Source references
-
-## Concept Pages
-One page per concept or topic. Include:
-- Definition / explanation
-- Current state of knowledge
-- Open questions or debates
-- Related concepts ([[wikilinks]])
-
-## Comparison Pages
-Side-by-side analyses. Include:
-- What is being compared and why
-- Dimensions of comparison (table format preferred)
-- Verdict or synthesis
-- Sources
-
 ## Update Policy
 When new information conflicts with existing content:
 1. Check the dates — newer sources generally supersede older ones
@@ -214,7 +299,7 @@ When new information conflicts with existing content:
 
 ### index.md Template
 
-The index is sectioned by type. Each entry is one line: wikilink + summary.
+The index is sectioned by page type. Each entry is one line: wikilink + summary.
 
 ```markdown
 # Wiki Index
@@ -233,6 +318,10 @@ The index is sectioned by type. Each entry is one line: wikilink + summary.
 ## Queries
 ```
 
+**One section per declared page type.** If `SCHEMA.md` declares `products/`, the index
+has a `## Products` section. Lint check ③ compares the filesystem against index entries,
+so a missing section is a systematic miss, not a one-off.
+
 **Scaling rule:** When any section exceeds 50 entries, split it into sub-sections
 by first letter or sub-domain. When the index exceeds 200 entries total, create
 a `_meta/topic-map.md` that groups pages by theme for faster navigation.
@@ -244,7 +333,7 @@ a `_meta/topic-map.md` that groups pages by theme for faster navigation.
 
 > Chronological record of all wiki actions. Append-only.
 > Format: `## [YYYY-MM-DD] action | subject`
-> Actions: ingest, update, query, lint, create, archive, delete
+> Actions: ingest, update, query, lint, create, archive, delete, split, merge, export
 > When this file exceeds 500 entries, rotate: rename to log-YYYY.md, start fresh.
 
 ## [YYYY-MM-DD] create | Wiki initialized
@@ -280,6 +369,10 @@ When the user provides a source (URL, file, paste), integrate it into the wiki:
      in SCHEMA.md (2+ source mentions, or central to one source)
    - **Existing pages:** Add new information, update facts, bump `updated` date.
      When new info contradicts existing content, follow the Update Policy.
+   - **Pick the right directory:** the page type is determined by which directory it
+     goes in, so decide the type *before* writing. A fact that fits nowhere may be
+     evidence you need a new declared page type — propose it rather than dumping it
+     into `concepts/`.
    - **Cross-reference:** Every new or updated page must link to at least 2 other
      pages via `[[wikilinks]]`. Check that existing pages link back.
    - **Tags:** Only use tags from the taxonomy in SCHEMA.md
@@ -294,6 +387,7 @@ When the user provides a source (URL, file, paste), integrate it into the wiki:
    - Update the "Total pages" count and "Last updated" date in index header
    - Append to `log.md`: `## [YYYY-MM-DD] ingest | Source Title`
    - List every file created or updated in the log entry
+   - If a new page type directory was involved, confirm its index section exists
 
 ⑥ **Report what changed** — list every file created or updated to the user.
 
@@ -311,59 +405,170 @@ When the user asks a question about the wiki's domain:
 ④ **Synthesize an answer** from the compiled knowledge. Cite the wiki pages
    you drew from: "Based on [[page-a]] and [[page-b]]..."
 ⑤ **File valuable answers back** — if the answer is a substantial comparison,
-   deep dive, or novel synthesis, create a page in `queries/` or `comparisons/`.
+   deep dive, or novel synthesis, create a page in the matching directory
+   (`comparisons/`, `queries/`, or a `timelines/` entry).
    Don't file trivial lookups — only answers that would be painful to re-derive.
 ⑥ **Update log.md** with the query and whether it was filed.
 
 ### 3. Lint
 
-When the user asks to lint, health-check, or audit the wiki:
+Run the bundled script — it implements every check below, in one pass:
 
-① **Orphan pages:** Find pages with no inbound `[[wikilinks]]` from other pages.
-```python
-# Use execute_code for this — programmatic scan across all wiki pages
-import os, re
-from collections import defaultdict
-wiki = "<WIKI_PATH>"
-# Scan all .md files in entities/, concepts/, comparisons/, queries/
-# Extract all [[wikilinks]] — build inbound link map
-# Pages with zero inbound links are orphans
+```bash
+python scripts/wiki_lint.py "$WIKI"              # full report, grouped by severity
+python scripts/wiki_lint.py "$WIKI" --summary-only   # stats only
+python scripts/wiki_lint.py "$WIKI" --json        # machine-readable
 ```
 
-② **Broken wikilinks:** Find `[[links]]` that point to pages that don't exist.
+Exit code is `0` when no critical issues exist, `1` when they do — usable directly as
+a CI or cron gate. Stdlib-only, no dependencies.
 
-③ **Index completeness:** Every wiki page should appear in `index.md`. Compare
-   the filesystem against index entries.
+What it checks, and how to act on each:
 
-④ **Frontmatter validation:** Every wiki page must have all required fields
-   (title, created, updated, type, tags, sources). Tags must be in the taxonomy.
+| # | Check | Severity | Action |
+|---|---|---|---|
+| ① | **Orphan pages** — no inbound `[[wikilinks]]` | INFO | Add inbound links from related pages; a true orphan is invisible |
+| ② | **Broken wikilinks** — `[[link]]` to a non-existent page | CRITICAL | Fix the target or create the page |
+| ③ | **Index completeness** — page absent from `index.md` | WARNING | Add it under its type section |
+| ④ | **Frontmatter validation** — required fields, tags in taxonomy | CRITICAL | Fill the field; add new tags to SCHEMA.md first |
+| ⑤ | **Stale content** — `updated` > 90 days old | INFO | Re-verify against the newest source, or accept and move on |
+| ⑥ | **Contradictions** — `contested: true` / `contradictions:` | WARNING | Surface both positions to the user with dates |
+| ⑦ | **Quality signals** — `confidence: low`, single-source unrated | INFO | Corroborate or demote |
+| ⑧ | **Source drift** — `raw/` sha256 mismatch | CRITICAL | The source changed under you; re-ingest or restore |
+| ⑨ | **Page size** — over 200 lines | INFO | Split (see *Splitting a Page*) |
+| ⑩ | **Tag audit** — tags not in the taxonomy | WARNING | Add to taxonomy or correct the page |
+| ⑪ | **Log rotation** — > 500 entries | INFO | Rotate to `log-YYYY.md` |
+| ⑫ | **Page types** — `type:` disagrees with its directory | WARNING | Move the page or fix the frontmatter |
 
-⑤ **Stale content:** Pages whose `updated` date is >90 days older than the most
-   recent source that mentions the same entities.
+Two behaviours worth knowing, because both are deliberate:
 
-⑥ **Contradictions:** Pages on the same topic with conflicting claims. Look for
-   pages that share tags/entities but state different facts. Surface all pages
-   with `contested: true` or `contradictions:` frontmatter for user review.
+- **An empty taxonomy disables the tag checks, it does not fail them.** If `SCHEMA.md`
+  declares no tags, the script cannot know what "wrong" means and stays quiet rather
+  than flagging every tag on every page. If you expected tag warnings and got none,
+  the taxonomy probably failed to parse — check that the tags are under a
+  `## Tag Taxonomy` heading.
+- **Declared page types come from SCHEMA.md.** A page directory the schema doesn't
+  declare is not linted as a wiki page at all. Missing pages in the stats output is
+  the usual symptom.
 
-⑦ **Quality signals:** List pages with `confidence: low` and any page that cites
-   only a single source but has no confidence field set — these are candidates
-   for either finding corroboration or demoting to `confidence: medium`.
+After a lint pass:
+- **Report findings** with specific file paths and suggested actions, grouped by
+  severity (broken links > source drift > orphans > contested pages > stale content > style)
+- **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`, naming the top fixes
 
-⑧ **Source drift:** For each file in `raw/` with a `sha256:` frontmatter, recompute
-   the hash and flag mismatches. Mismatches indicate the raw file was edited
-   (shouldn't happen — raw/ is immutable) or ingested from a URL that has since
-   changed. Not a hard error, but worth reporting.
+For the reasoning behind the checks — why orphan detection matters more than it looks,
+why source drift is a correctness bug and not a hygiene nit — see
+`references/lint-rationale.md`.
 
-⑨ **Page size:** Flag pages over 200 lines — candidates for splitting.
+### 4. Splitting a Page
 
-⑩ **Tag audit:** List all tags in use, flag any not in the SCHEMA.md taxonomy.
+Lint flags pages over ~200 lines. Splitting preserves the compounding property — a
+3,000-line page is a wiki the wiki can't link into.
 
-⑪ **Log rotation:** If log.md exceeds 500 entries, rotate it.
+1. **Identify the seams.** Usually one of: distinct sub-topics, distinct time periods,
+   or distinct entities that were merged by accident.
+2. **Create the child pages** in the appropriate directories, each with full frontmatter
+   and at least 2 outbound `[[wikilinks]]`.
+3. **Leave the parent as a hub.** Keep the overview, the definition, and a short
+   annotated link list to the children. Do not empty it — the parent's inbound links
+   must keep resolving.
+4. **Move the detail**, don't copy it. Duplicated prose diverges and then contradicts.
+5. **Update `index.md`** — add every child, keep the parent entry.
+6. **Log it:** `## [YYYY-MM-DD] split | Parent Page → 3 children`
 
-⑫ **Report findings** with specific file paths and suggested actions, grouped by
-   severity (broken links > orphans > source drift > contested pages > stale content > style issues).
+### 5. Merging Pages
 
-⑬ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
+The inverse, and the more common cleanup: two thin pages covering the same ground.
+
+1. **Confirm the overlap** by reading both — the same *subject*, not merely adjacent topics.
+2. **Pick the surviving slug.** Prefer the one with more inbound `[[wikilinks]]`; the
+   other becomes a redirect stub or is archived.
+3. **Merge content**, reconciling any contradictions explicitly (they are usually the
+   signal that one page was simply older).
+4. **Repoint every inbound link** — `search_files "\[\[old-page\]\]"` finds them all.
+   A merge that leaves broken inbound links is worse than the duplication was.
+5. **Update `index.md`**, remove the dead entry.
+6. **Log it:** `## [YYYY-MM-DD] merge | A + B → C`
+
+### 6. Briefing and Export
+
+The wiki is a source. Common downstream shapes:
+
+- **Briefing doc** — synthesize a dated markdown brief from N wiki pages on a theme.
+  Write it to `queries/` with `type: query` so it compounds, or out to a file if the
+  user wants it as a deliverable. Cite pages inline as `[[wikilink]]`.
+- **Static site** — the directories render in MkDocs or Docusaurus as-is; `[[wikilinks]]`
+  need rewriting to relative paths, and `raw/` should be excluded from the nav.
+- **Handoff bundle** — a subset of pages plus their `sources:` raw files, for someone
+  outside the wiki. Copy raw files alongside so provenance survives the trip.
+
+When the export quotes outside facts, use the `grounded-citations` skill for the
+citation ledger — the wiki's `sources:` frontmatter is the input, not the output format.
+
+## Automation: Scheduled Maintenance
+
+A wiki that isn't maintained decays quietly. Two cron shapes are worth setting:
+
+**Nightly re-ingest + drift scan.** Re-fetch every `raw/` file with a `source_url`,
+recompute sha256, and surface only what changed:
+
+```bash
+python scripts/wiki_lint.py "$WIKI" --json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for i in d['issues']:
+    if i['check'] in ('source-drift','broken-wikilinks'):
+        print(i['severity'], i['path'], i['message'])
+"
+```
+
+**Weekly lint digest.** `--summary-only` plus the issue counts, delivered to a chat
+surface. Route it so the output is a *diff against last week*, not a full re-report —
+use the cron `continuity` flag so the job sees its own previous output and can report
+only changes.
+
+Guidance that keeps automated runs from making things worse:
+- **Never let a scheduled run create entity pages from scratch.** Heuristic page
+  creation is how a wiki fills with stubs. Scheduled runs should update existing pages
+  and *report* candidates for new pages.
+- **Skip the takeaway discussion step** (Ingest ②) in unattended contexts.
+- **Cap the blast radius.** If a run would touch more than ~10 pages, have it report and
+  stop rather than mass-update. See the *Ask before mass-updating* pitfall.
+- **Log every automated run** so the human can audit what changed while they slept.
+
+## Multiple Wikis
+
+One wiki per domain. When the user wants a second, don't nest — sibling directories,
+each with its own `SCHEMA.md`, `index.md`, and `log.md`:
+
+```bash
+export WIKI_PATH=~/wiki            # default wiki
+export WIKI_LEGAL=~/wikis/legal    # domain-specific wikis
+export WIKI_HEALTH=~/wikis/health
+```
+
+`WIKI_PATH` addresses the default; other wikis are addressed by explicit path. The
+WebUI widget observes the configured wiki only, so make the configured one the wiki
+the user actually works in most.
+
+**Cross-wiki linking is a trap.** `[[wikilinks]]` resolve within one vault; a link
+across wikis silently breaks in Obsidian. If two domains genuinely cross-reference
+heavily, that is evidence they are one wiki with two tag families.
+
+## Large Wikis: Context Discipline
+
+Past a few hundred pages, the failure mode stops being "missing knowledge" and becomes
+"agent reads 40 files and answers worse." Rules:
+
+- **Index first, always.** `index.md` is the retrieval layer. Read it before reading pages.
+- **Trust the summaries.** The one-line index entry is usually enough to decide relevance.
+  Read a page only when its summary says you must.
+- **Budget your reads.** For a broad query, cap at ~10 page reads; if you need more, the
+  index summaries are too thin — improve them instead.
+- **Prefer `search_files` over reading directories.** `search_files "term" path="$WIKI"
+  file_glob="*.md"` beats opening files one by one.
+- **Subagents for wide synthesis.** Delegate "read these 30 pages and synthesize" to a
+  subagent, which absorbs the context cost and returns only the synthesis.
 
 ## Working with the Wiki
 
@@ -378,6 +583,9 @@ search_files "*.md" target="files" path="$WIKI"
 
 # Find pages by tag
 search_files "tags:.*alignment" path="$WIKI" file_glob="*.md"
+
+# Find every inbound link to a page (before a merge or archive)
+search_files "\[\[old-page\]\]" path="$WIKI" file_glob="*.md"
 
 # Recent activity
 read_file "$WIKI/log.md" offset=<last 20 lines>
@@ -402,6 +610,10 @@ When content is fully superseded or the domain scope changes:
 4. Update any pages that linked to it — replace wikilink with plain text + "(archived)"
 5. Log the archive action
 
+`_archive/` is excluded from lint, so archived pages don't generate orphan and
+broken-link noise. That also means nothing will remind you they exist — the log is the
+only index of what was archived.
+
 ### Obsidian Integration
 
 The wiki directory works as an Obsidian vault out of the box:
@@ -417,6 +629,9 @@ For best results:
 
 If using the Obsidian skill alongside this one, set `OBSIDIAN_VAULT_PATH` to the
 same directory as the wiki path.
+
+Graph View is the fastest way to see a lint problem before lint finds it: orphans and
+clusters show up as disconnected islands.
 
 ### Obsidian Headless (servers and headless machines)
 
@@ -481,6 +696,8 @@ vault in Obsidian on your laptop/phone — changes appear within seconds.
   Skipping this causes duplicates and missed cross-references.
 - **Always update index.md and log.md** — skipping this makes the wiki degrade. These are the
   navigational backbone.
+- **Don't create a directory the schema doesn't declare** — undeclared page directories are
+  invisible to lint and to every future session. Add the `## Page Types` row first.
 - **Don't create pages for passing mentions** — follow the Page Thresholds in SCHEMA.md. A name
   appearing once in a footnote doesn't warrant an entity page.
 - **Don't create pages without cross-references** — isolated pages are invisible. Every page must
@@ -496,6 +713,8 @@ vault in Obsidian on your laptop/phone — changes appear within seconds.
   The agent should check log size during lint.
 - **Handle contradictions explicitly** — don't silently overwrite. Note both claims with dates,
   mark in frontmatter, flag for user review.
+- **An empty taxonomy check is silent, not green** — if tag warnings vanish, suspect the
+  taxonomy stopped parsing rather than that the tags got clean.
 
 ## Related Tools
 
@@ -505,3 +724,8 @@ so users who want a scheduled/CLI-driven compile pipeline can point it at the sa
 skill maintains. Trade-offs: it owns page generation (replaces the agent's judgment on page
 creation) and is tuned for small corpora. Use this skill when you want agent-in-the-loop curation;
 use llmwiki when you want batch compile of a source directory.
+
+Pair with:
+- **`obsidian`** — filesystem-first vault operations against the same directory.
+- **`grounded-citations`** — when wiki content flows into a cited deliverable.
+- **`arxiv`** — a natural `raw/papers/` source for research wikis.
