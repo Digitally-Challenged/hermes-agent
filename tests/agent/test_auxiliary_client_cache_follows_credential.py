@@ -29,6 +29,12 @@ def _seed(provider: str, token: str, *, model_cooldown: str | None = None) -> No
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setattr(aux, "_client_cache", {})
+    # The pool seeder also borrows a Claude Code OAuth login from the host
+    # (``~/.claude/.credentials.json`` / macOS Keychain), which HERMES_HOME does
+    # not cover. Left un-stubbed, that extra entry carries no model cooldown and
+    # becomes ``peek()``'s target, so the cooldown assertions below would depend
+    # on whether the host happens to have the Claude CLI logged in.
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
     return tmp_path / "hermes"
 
 
