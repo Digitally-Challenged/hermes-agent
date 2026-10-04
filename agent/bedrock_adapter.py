@@ -103,6 +103,8 @@ def _require_boto3():
         # A completed install that needs a restart must not be reported as "install it".
         reason = f": {install_error}" if install_error else f". Run: {install_hint('bedrock')}"
         raise ImportError(f"The 'boto3' package is required for the AWS Bedrock provider{reason}") from install_error
+    from agent.ssl_verify import repin_botocore_ssl_context
+    repin_botocore_ssl_context()
     try:
         version = tuple(int(x) for x in boto3.__version__.split(".")[:3])
     except (AttributeError, ValueError):

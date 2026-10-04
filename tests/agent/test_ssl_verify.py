@@ -170,3 +170,47 @@ assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
 """], capture_output=True, text=True, timeout=30)
     assert child.returncode == 0, child.stderr
+
+
+def test_repin_botocore_ssl_context_clears_a_stale_reference():
+    """``botocore.httpsession`` keeps its own ``SSLContext`` name, captured at
+    its own import time. If that copy is ever left pointing at the raw stdlib
+    class while truststore has replaced ``ssl.SSLContext`` process-wide,
+    building a raw context and setting ``.options`` on it recurses forever
+    (CPython's ``SSLContext.options`` setter re-resolves the class name from
+    the ``ssl`` module's globals on every call). ``repin_botocore_ssl_context``
+    must point botocore's copy back at the live class, clearing the crash.
+    """
+    import subprocess
+    import sys
+
+    pytest.importorskip("botocore")
+    pytest.importorskip("boto3")
+
+    child = subprocess.run([sys.executable, "-c", """
+import ssl
+import truststore
+truststore.inject_into_ssl()
+
+# Reproduce the bug: force botocore's own SSLContext reference back to the
+# raw stdlib class, as if botocore had captured it before truststore installed.
+from truststore._ssl_constants import _original_SSLContext
+import botocore.httpsession as httpsession
+httpsession.SSLContext = _original_SSLContext
+
+import boto3
+session = boto3.Session()
+try:
+    session.get_credentials()
+    raise AssertionError('expected RecursionError with a stale botocore SSLContext reference')
+except RecursionError:
+    pass
+
+from agent.ssl_verify import repin_botocore_ssl_context
+repin_botocore_ssl_context()
+assert httpsession.SSLContext is ssl.SSLContext
+
+import botocore.session as botocore_session
+botocore_session.get_session().get_credentials()
+"""], capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stdout + child.stderr
