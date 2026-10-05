@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import ssl
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -48,6 +49,7 @@ def install_truststore() -> bool:
         import truststore
 
         truststore.inject_into_ssl()
+        repin_botocore_ssl_context()
         _installed = True
         logger.debug("TLS trust: platform store (truststore)")
     except Exception as exc:  # noqa: BLE001 — never break startup over TLS setup
@@ -62,34 +64,30 @@ def install_truststore() -> bool:
 
 
 def repin_botocore_ssl_context() -> None:
-    """Point ``botocore.httpsession.SSLContext`` at the injected class.
+    """Point an already-loaded ``botocore.httpsession.SSLContext`` at the live class.
 
     ``botocore/httpsession.py`` captures ``SSLContext`` once, at its own
     import time (``from urllib3.util.ssl_ import SSLContext``, or the
-    pyopenssl fallback) — whenever that happens to run. truststore's
-    ``inject_into_ssl()`` only patches ``ssl.SSLContext`` and
-    ``urllib3.util.ssl_.SSLContext``; it has no way to know about botocore's
-    own copy of the name, and botocore is normally imported long after
-    ``install_truststore()`` (boto3 is lazy-imported by
-    ``agent/bedrock_adapter.py``), so there is nothing to re-pin yet when
-    truststore installs.
+    pyopenssl fallback). truststore's ``inject_into_ssl()`` patches
+    ``ssl.SSLContext`` and ``urllib3.util.ssl_.SSLContext`` but cannot know
+    about botocore's copy, so a botocore loaded BEFORE the injection keeps the
+    raw stdlib class. The WebUI does exactly that: its Bedrock model list loads
+    botocore, and ``install_truststore()`` only runs once the first chat turn
+    builds an HTTP client.
 
-    If botocore's copy is ever the un-patched stdlib class while
-    ``ssl.SSLContext`` has been replaced, building a raw context and then
-    setting ``.options`` on it recurses forever: CPython 3.14's
-    ``SSLContext.options`` setter re-resolves ``SSLContext`` from the ``ssl``
-    module's globals on every call rather than closing over it, so it calls
-    right back into truststore's class on the raw instance. A
-    ``ContainerMetadataFetcher`` built during Bedrock credential resolution
-    hits exactly this path (``agent/bedrock_adapter.py``'s boto3 calls). Call
-    this right after importing ``boto3``/``botocore`` there, every time —
-    it's a no-op once the reference already matches.
+    A raw context built while ``ssl.SSLContext`` is replaced recurses forever
+    on ``.options``: CPython 3.14's setter re-resolves ``SSLContext`` from the
+    ``ssl`` module's globals on every call, so it calls right back into
+    truststore's class. Every Bedrock credential resolution builds one (the
+    ``ContainerMetadataFetcher``), including the Anthropic SDK's Bedrock signer,
+    which never goes through ``agent/bedrock_adapter.py``.
+
+    ``install_truststore()`` calls this right after injecting; the Bedrock
+    adapter calls it again after importing boto3. A botocore that is not loaded
+    yet is left alone: it will capture the live class when it is imported.
     """
-    try:
-        import botocore.httpsession as httpsession
-    except ImportError:
-        return
-    if httpsession.SSLContext is not ssl.SSLContext:
+    httpsession = sys.modules.get("botocore.httpsession")
+    if httpsession is not None and httpsession.SSLContext is not ssl.SSLContext:
         httpsession.SSLContext = ssl.SSLContext
 
 

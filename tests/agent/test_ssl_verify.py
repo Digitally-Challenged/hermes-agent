@@ -214,3 +214,44 @@ import botocore.session as botocore_session
 botocore_session.get_session().get_credentials()
 """], capture_output=True, text=True, timeout=30)
     assert child.returncode == 0, child.stdout + child.stderr
+
+
+def test_truststore_installed_after_botocore_loaded_keeps_credential_resolution_working():
+    """The WebUI's real order: its Bedrock model list loads botocore (which
+    captures the stdlib ``SSLContext``) before anything calls
+    ``install_truststore()``, which only runs once the first chat turn builds an
+    HTTP client. Credential resolution, which the Anthropic SDK's Bedrock signer
+    runs on every request without going through ``bedrock_adapter``, must not
+    recurse afterwards.
+    """
+    import subprocess
+    import sys
+
+    pytest.importorskip("botocore")
+    pytest.importorskip("boto3")
+
+    child = subprocess.run([sys.executable, "-c", """
+import boto3
+import botocore.httpsession
+
+from agent.ssl_verify import install_truststore
+assert install_truststore()
+
+boto3.Session().get_credentials()
+"""], capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stdout + child.stderr
+
+
+def test_install_truststore_does_not_import_botocore():
+    """The re-pin inside ``install_truststore()`` only fixes a botocore that is
+    already loaded; it must not import botocore, which stays a lazy dependency."""
+    import subprocess
+    import sys
+
+    child = subprocess.run([sys.executable, "-c", """
+import sys
+from agent.ssl_verify import install_truststore
+install_truststore()
+assert 'botocore' not in sys.modules, 'install_truststore() imported botocore'
+"""], capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stdout + child.stderr
