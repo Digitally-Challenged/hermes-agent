@@ -1,0 +1,5 @@
+name: claude-agent-sdk-provider
+kind: model-provider
+version: 1.0.0
+description: Claude subscription (Pro/Max) via the Claude Agent SDK
+author: Nick Coleman

@@ -438,6 +438,8 @@ otlp = [
 ]
 langfuse = ["langfuse==4.15.2"]
 bedrock = ["boto3==1.42.89"]
+# Claude subscription (Pro/Max) provider: drives the `claude` CLI. Lazy-installed at first use.
+claude-agent-sdk = ["claude-agent-sdk==0.2.176"]
 vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
