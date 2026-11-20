@@ -138,7 +138,12 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     } if isinstance(raw_thresholds, dict) else {}
     # threshold: present value wins; absence derives via the agent_init resolution (default + autoraise).
     # resolve_model_threshold returns ``pct`` unchanged when model_thresholds is empty.
-    from agent.context_compressor import resolve_model_threshold
+    from agent.context_compressor import ContextCompressor, resolve_model_threshold
+    if isinstance(cc, ContextCompressor):
+        from agent.safe_worker_policy import safe_worker_enabled
+        cc.endpoint_threshold_tokens = cc._coerce_endpoint_threshold_tokens(
+            None if safe_worker_enabled() else compression.get("endpoint_threshold_tokens")
+        )
     pct: float | None = None
     if "threshold" in compression:
         with contextlib.suppress(TypeError, ValueError):

@@ -1804,6 +1804,8 @@ def _compressor_max_tokens(agent):
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db,
                           persistence=None):
+    from agent.safe_worker_policy import safe_worker_enabled
+
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
@@ -1839,6 +1841,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             abort_on_summary_failure=cs.abort_on_summary_failure,
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
             threshold_tokens_cap=cs.threshold_tokens,
+            endpoint_threshold_tokens=(None if safe_worker_enabled() else
+                                       _cfg_dict(_agent_cfg, "compression").get("endpoint_threshold_tokens")),
             proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
