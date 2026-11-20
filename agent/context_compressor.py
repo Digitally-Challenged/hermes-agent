@@ -2508,7 +2508,9 @@ class ContextCompressor(
             logger.debug("compression cancellation check failed", exc_info=True)
             return False
 
-    def _derive_trigger(self, model: str, context_length: int, provider: str) -> tuple[float, float, int]:
+    def _derive_trigger(
+        self, model: str, context_length: int, provider: str, base_url: str | None = None,
+    ) -> tuple[float, float, int]:
         """``(base_percent, effective_percent, threshold_tokens)`` for a model/window, from the raw config
         value so a switch away from an overridden model falls back correctly. Pure: the one place the
         trigger math lives, shared by ``update_model`` and the switch guard's preview so the number the
@@ -2517,19 +2519,24 @@ class ContextCompressor(
         base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
         effective_percent = self._effective_threshold_percent(context_length, base_percent)
         threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
-        cap = self._effective_threshold_cap(context_length)
+        cap = self._effective_threshold_cap(context_length, base_url)
         if cap is not None:
             threshold = min(threshold, cap)
         return base_percent, effective_percent, threshold
 
-    def _effective_threshold_cap(self, context_length: int) -> int | None:
-        """The configured ``threshold_tokens`` cap clamped to the window; None when no cap is configured."""
-        cap = self.threshold_tokens_cap
-        return min(cap, context_length) if cap is not None and cap > 0 else None
+    def _effective_threshold_cap(self, context_length: int, base_url: str | None = None) -> int | None:
+        """Explicit endpoint ceilings supplement the legacy global cap; neither overrides window safety."""
+        endpoint = self.base_url if base_url is None else base_url
+        caps = [cap for cap in (
+            self.threshold_tokens_cap, self.endpoint_threshold_tokens.get(endpoint.rstrip("/")),
+        ) if cap is not None and cap > 0]
+        return min(context_length, *caps) if caps else None
 
-    def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
+    def preview_threshold_tokens(
+        self, model: str, context_length: int, provider: str = "", *, base_url: str | None = None,
+    ) -> int:
         """The trigger ``update_model`` would install, without mutating state."""
-        return self._derive_trigger(model, context_length, provider)[2]
+        return self._derive_trigger(model, context_length, provider, base_url)[2]
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: Any = "", provider: str = "",
@@ -2600,6 +2607,15 @@ class ContextCompressor(
     # Same normalization: a threshold_tokens cap is a positive int, or None for "no cap".
     _coerce_threshold_tokens_cap = _coerce_max_tokens
 
+    @classmethod
+    def _coerce_endpoint_threshold_tokens(cls, value: Any) -> dict:
+        """Snapshot explicit endpoint ceilings; share normalization with live config updates."""
+        return {
+            endpoint.rstrip("/"): cls._coerce_threshold_tokens_cap(cap)
+            for endpoint, cap in (value.items() if isinstance(value, dict) else ())
+            if isinstance(endpoint, str) and endpoint
+        }
+
     def _apply_threshold_tokens_cap(self) -> None:
         """Clamp threshold_tokens to the configured cap (itself clamped to the context length) and to the
         auxiliary summariser's window when the feasibility probe installed one."""
@@ -2668,7 +2684,7 @@ class ContextCompressor(
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, endpoint_threshold_tokens: dict[str, Any] | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2684,6 +2700,8 @@ class ContextCompressor(
         self.threshold_percent = self._base_threshold_percent
         # Effective trigger = min(ratio threshold, cap); re-applied in update_model().
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(threshold_tokens_cap)
+        # Exact endpoint opt-in: loopback can also host a cloud proxy. Snapshot per agent/profile.
+        self.endpoint_threshold_tokens = self._coerce_endpoint_threshold_tokens(endpoint_threshold_tokens)
         # Aux summariser window installed by the feasibility probe; None until it runs.
         self._aux_context_ceiling: int | None = None
         self.protect_first_n, self.protect_last_n = protect_first_n, protect_last_n

@@ -380,6 +380,35 @@ auxiliary model is re-probed immediately: the trigger is clamped again before th
 compaction on the new window, or restored to the main model's own value when the
 auxiliary model now fits.
 
+### Per-endpoint token ceilings
+
+The built-in compressor accepts `compression.endpoint_threshold_tokens` for explicitly
+identified inference endpoints. This is useful when cloud and local models share a
+profile but local inference needs an absolute ceiling:
+
+```yaml
+compression:
+  threshold: 0.50
+  threshold_tokens: null
+  endpoint_threshold_tokens:
+    "http://127.0.0.1:8001/v1": 120000
+```
+
+Keys match the complete runtime `base_url`, ignoring trailing `/` only. There is no
+model-name, hostname-prefix, or generic loopback detection: a localhost cloud proxy
+is not capped unless explicitly listed. Include each endpoint alias you actually use.
+Unknown endpoints use the normal window-based trigger. Invalid/nonpositive values
+are ignored, like the legacy `threshold_tokens` setting.
+
+The effective trigger is the minimum of the normal window-based trigger (including
+output-token reservation and small-window floors), any global `threshold_tokens`
+ceiling, and the matching endpoint ceiling. Existing auxiliary-model feasibility
+ceilings still apply. A 120K setting never forces a smaller model past its safe
+window. Policy is snapshotted from the owning profile at agent construction and
+reapplied at model switches, fallback activation, and primary restoration; restart
+the session to load edits to the endpoint map. Plugin context engines continue to
+own their policy and do not receive this native-compressor setting.
+
 ### Per-model threshold overrides
 
 `compression.model_thresholds` lets you trigger compaction at different points
