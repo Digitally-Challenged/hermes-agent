@@ -1804,8 +1804,6 @@ def _compressor_max_tokens(agent):
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db,
                           persistence=None):
-    from agent.safe_worker_policy import safe_worker_enabled
-
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
@@ -1832,6 +1830,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
+        from agent.safe_worker_policy import safe_worker_enabled
         agent.context_compressor = ContextCompressor(
             model=agent.model, threshold_percent=cs.threshold, protect_first_n=cs.protect_first,
             protect_last_n=cs.protect_last, summary_target_ratio=cs.target_ratio,
